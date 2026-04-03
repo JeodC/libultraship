@@ -45,11 +45,11 @@ std::stack<std::string> currentDir;
 #define SUPPORT_CHECK(x) assert(x)
 
 // SCALE_M_N: upscale/downscale M-bit integer to N-bit
-#define SCALE_5_8(VAL_) (((VAL_)*0xFF) / 0x1F)
+#define SCALE_5_8(VAL_) (((VAL_) * 0xFF) / 0x1F)
 #define SCALE_8_5(VAL_) ((((VAL_) + 4) * 0x1F) / 0xFF)
-#define SCALE_4_8(VAL_) ((VAL_)*0x11)
+#define SCALE_4_8(VAL_) ((VAL_) * 0x11)
 #define SCALE_8_4(VAL_) ((VAL_) / 0x11)
-#define SCALE_3_8(VAL_) ((VAL_)*0x24)
+#define SCALE_3_8(VAL_) ((VAL_) * 0x24)
 #define SCALE_8_3(VAL_) ((VAL_) / 0x24)
 
 // Based off the current set native dimensions or active framebuffer
@@ -873,7 +873,7 @@ void Interpreter::ImportTextureCi4(int tile, bool importReplacement) {
     palette = mRdp->palettes[palIdx / 8] + (palIdx % 8) * 16 * 2;
 
     uint32_t baseLineSizeBytes = GetEffectiveLineSize(lineSizeBytes, fullImageLineSizeBytes, sizeBytes,
-                                                     mRdp->texture_tile[tile].line_size_bytes);
+                                                      mRdp->texture_tile[tile].line_size_bytes);
     uint32_t resultLineSizeBytes = baseLineSizeBytes;
 
     if (metadata->h_byte_scale != 1) {
@@ -960,7 +960,7 @@ void Interpreter::ImportTextureCi8(int tile, bool importReplacement) {
     }
 
     uint32_t baseLineSizeBytes = GetEffectiveLineSize(lineSizeBytes, fullImageLineSizeBytes, sizeBytes,
-                                                     mRdp->texture_tile[tile].line_size_bytes);
+                                                      mRdp->texture_tile[tile].line_size_bytes);
     uint32_t resultLineSizeBytes = baseLineSizeBytes;
     if (metadata->h_byte_scale != 1) {
         resultLineSizeBytes *= metadata->h_byte_scale;
@@ -1146,11 +1146,7 @@ void Interpreter::ImportTexture(int i, int tile, bool importReplacement) {
                     origSizeBytes };
         } else {
             // CI8 uses both palette halves
-            key = { origAddr,
-                    { mRdp->palette_dram_addr[0], mRdp->palette_dram_addr[1] },
-                    fmt,
-                    siz,
-                    paletteIndex,
+            key = { origAddr,     { mRdp->palette_dram_addr[0], mRdp->palette_dram_addr[1] }, fmt, siz, paletteIndex,
                     origSizeBytes };
         }
     } else {
@@ -2797,8 +2793,7 @@ void Interpreter::GfxDpImageRectangle(int32_t tile, int32_t w, int32_t h, int32_
 void Interpreter::GfxDpFillRectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lry) {
     if (mRdp->color_image_address == mRdp->z_buf_address) {
         // Fullscreen Z clears are redundant — already done by glClear at frame start.
-        bool isFullScreen = (ulx <= 0 && uly <= 0 &&
-                             lrx >= (int32_t)(mNativeDimensions.width - 1) * 4 &&
+        bool isFullScreen = (ulx <= 0 && uly <= 0 && lrx >= (int32_t)(mNativeDimensions.width - 1) * 4 &&
                              lry >= (int32_t)(mNativeDimensions.height - 1) * 4);
         if (isFullScreen) {
             return;
