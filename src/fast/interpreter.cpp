@@ -4547,8 +4547,8 @@ static void gfx_step() {
             uintptr_t w1 = (uintptr_t)cmd->words.w1;
             if (w1 < 0x10000
 #if UINTPTR_MAX > 0xFFFFFFFFu
-                // On 64-bit Windows, user-space tops out here.
-                || w1 > 0x00007FFFFFFFFFFFull
+                // 48-bit user-space cap covers ARM64 Linux (up to 0x0000FFFF_FFFFFFFF).
+                || w1 > 0x0000FFFFFFFFFFFFull
 #endif
             ) {
                 ++g_exec_stack.currCmd();
@@ -4978,9 +4978,10 @@ int32_t gfx_check_image_signature(const char* imgData) {
         return 0;
     }
 #if UINTPTR_MAX > 0xFFFFFFFFu
-    // On 64-bit Windows, user-space addresses are below this limit.
-    // Anything above is kernel memory or a sentinel value.
-    if (i > 0x00007FFFFFFFFFFFull) {
+    // On 64-bit user-space, cap to 48-bit virtual addresses.
+    // x86_64 uses the lower canonical half (< 0x00008000_00000000);
+    // ARM64 Linux uses TTBR0 which can reach 0x0000FFFF_FFFFFFFF.
+    if (i > 0x0000FFFFFFFFFFFFull) {
         return 0;
     }
 #endif
