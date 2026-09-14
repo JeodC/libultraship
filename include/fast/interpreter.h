@@ -814,11 +814,6 @@ class Interpreter {
     int mFrameReplacementUploads = 0; // count uploaded so far this frame
     // Per-frame activity counters for the host's slow-frame log (reset with the budget)
     int mFrameTextureUploads = 0;
-    // Replacement report (see ReportReplacements): per-frame counts by outcome
-    int mRepAlt = 0, mRepPending = 0, mRepNone = 0, mRepVanillaCi = 0, mRepVariant = 0;
-    std::vector<std::string> mRepExamples;
-    uint32_t mRepFrames = 0;
-    void ReportReplacements();
     int mFrameShaderCompiles = 0;
     size_t mFrameUploadBytes = 0;
     bool mAllowReplacementDefer = false; // set by the draw path only for non-indexed bases
@@ -851,6 +846,9 @@ class Interpreter {
     std::vector<uint8_t> mMipLevelBuffer;
     std::vector<uint8_t> mMipBaseCopy;
     bool UploadVanillaCi(int tile);
+    // The sprite-shading palette rebuilt at an HD replacement's size from its alpha.
+    const uint8_t* ShadeReplacementByAlpha(const RawTexMetadata* metadata, int tile);
+    std::vector<uint8_t> mShadeBuffer;
     // Returns the texture resource to draw with: the resolved HD if its async load is ready,
     // otherwise the vanilla fallback (kicking the async load on first reference). Falls back
     // to a plain cached load when async is disabled or alt assets are off.

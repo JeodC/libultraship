@@ -851,10 +851,8 @@ std::shared_ptr<Ship::IResource> Interpreter::AcquireDrawTexture(const char* nam
     // Synchronous (async loading off): try the HD path, fall back to vanilla when absent.
     if (!mAsyncTextureLoad) {
         if (auto hd = rm->LoadResource(altName, /*loadExact=*/true)) {
-            mRepAlt++;
             return settled(hd);
         }
-        mRepNone++;
         mAltMissing.insert(nameStr);
         return settled(rm->LoadResource(name, /*loadExact=*/true));
     }
@@ -865,13 +863,8 @@ std::shared_ptr<Ship::IResource> Interpreter::AcquireDrawTexture(const char* nam
         auto& f = mTexFutures[nameStr];
         if (f.valid() && f.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
             if (auto r = f.get()) {
-                mRepAlt++;
                 return settled(r);
             }
-        }
-        mRepNone++;
-        if (mRepExamples.size() < 6) {
-            mRepExamples.push_back(std::string("none ") + name);
         }
         return settled(rm->LoadResource(name, /*loadExact=*/true));
     }
@@ -910,10 +903,6 @@ std::shared_ptr<Ship::IResource> Interpreter::AcquireDrawTexture(const char* nam
         return settled(rm->LoadResource(name, /*loadExact=*/true));
     }
     // Still decoding — render the cheap vanilla version this frame, and do not remember it.
-    mRepPending++;
-    if (mRepExamples.size() < 6) {
-        mRepExamples.push_back(std::string("pending ") + name);
-    }
     return rm->LoadResource(name, /*loadExact=*/true);
 }
 
@@ -1734,6 +1723,158 @@ bool Interpreter::UploadVanillaCi(int tile) {
     return true;
 }
 
+const uint8_t* Interpreter::ShadeReplacementByAlpha(const RawTexMetadata* metadata, int tile) {
+    const auto& tt = mRdp->texture_tile[tile];
+    const bool ci4 = tt.siz == G_IM_SIZ_4b;
+    if (tt.fmt != G_IM_FMT_CI || (!ci4 && tt.siz != G_IM_SIZ_8b)) {
+        return nullptr;
+    }
+    if (metadata->resource == nullptr || metadata->type != Fast::TextureType::RGBA32bpp ||
+        metadata->resource->ImageData == nullptr ||
+        !metadata->resource->GetInitData()->Path.starts_with(Ship::IResource::gAltAssetPrefix)) {
+        return nullptr;
+    }
+    if (ci4 ? mRdp->palettes[tt.palette / 8] == nullptr
+            : (mRdp->palettes[0] == nullptr || mRdp->palettes[1] == nullptr)) {
+        return nullptr;
+    }
+
+    const uint32_t dstW = metadata->width;
+    const uint32_t dstH = metadata->height;
+    const size_t bytes = (size_t)dstW * dstH * 4;
+    if (bytes == 0 || metadata->resource->ImageDataSize < bytes) {
+        return nullptr;
+    }
+
+    const uint32_t entries = ci4 ? 16 : 256;
+    auto entryRaw = [&](uint32_t idx) -> uint16_t {
+        const uint8_t* p = ci4 ? mRdp->palettes[tt.palette / 8] + (tt.palette % 8) * 16 * 2 + idx * 2
+                               : mRdp->palettes[idx / 128] + (idx % 128) * 2;
+        return (uint16_t)((p[0] << 8) | p[1]);
+    };
+    auto unpack = [](uint16_t c, uint8_t out[4]) {
+        out[0] = SCALE_5_8(c >> 11);
+        out[1] = SCALE_5_8((c >> 6) & 0x1f);
+        out[2] = SCALE_5_8((c >> 1) & 0x1f);
+        out[3] = (c & 1) ? 255 : 0;
+    };
+
+    uint16_t colour[2] = { 0, 0 };
+    int count[2] = { 0, 0 };
+    int distinct = 0;
+    bool twoTone = true;
+    for (uint32_t i = 0; i < entries && twoTone; i++) {
+        const uint16_t entry = entryRaw(i);
+        if (distinct == 0) {
+            colour[0] = entry;
+            count[0] = 1;
+            distinct = 1;
+        } else if (entry == colour[0]) {
+            count[0]++;
+        } else if (distinct == 1) {
+            colour[1] = entry;
+            count[1] = 1;
+            distinct = 2;
+        } else if (entry == colour[1]) {
+            count[1]++;
+        } else {
+            twoTone = false;
+        }
+    }
+
+    if (mShadeBuffer.size() < bytes) {
+        mShadeBuffer.resize(bytes);
+    }
+    const uint8_t* src = metadata->resource->ImageData;
+    uint8_t* dst = mShadeBuffer.data();
+
+    if (twoTone) {
+        const int opaqueIdx = (distinct == 2 && count[1] > count[0]) ? 1 : 0;
+        const int clearIdx = distinct == 2 ? 1 - opaqueIdx : opaqueIdx;
+        uint8_t rgba[2][4];
+        unpack(colour[0], rgba[0]);
+        unpack(colour[1], rgba[1]);
+        for (size_t i = 0; i < bytes; i += 4) {
+            memcpy(dst + i, rgba[src[i + 3] != 0 ? opaqueIdx : clearIdx], 4);
+        }
+        return dst;
+    }
+
+    const auto& loaded = mRdp->loaded_texture[tt.tmem_index];
+    auto base = std::static_pointer_cast<Fast::Texture>(
+        Ship::Context::GetRawInstance()->GetResourceManager()->LoadResource(
+            std::string(GetBaseTexturePath(metadata->resource->GetInitData()->Path)), /*loadExact=*/true));
+    if (base == nullptr || base->ImageData == nullptr ||
+        base->Type != (ci4 ? Fast::TextureType::Palette4bpp : Fast::TextureType::Palette8bpp)) {
+        return nullptr;
+    }
+
+    const uint32_t lineBytes = tt.line_size_bytes;
+    if (lineBytes == 0) {
+        return nullptr;
+    }
+    uint32_t srcW = ci4 ? lineBytes * 2 : lineBytes;
+    uint32_t srcH = loaded.orig_size_bytes / lineBytes;
+    if ((size_t)lineBytes * srcH > base->ImageDataSize) {
+        srcH = (uint32_t)(base->ImageDataSize / lineBytes);
+    }
+    const uint32_t tileW = TileWidthPx(mRdp, tile);
+    const uint32_t tileH = TileHeightPx(mRdp, tile);
+    if (tileW > 0 && tileW < srcW) {
+        srcW = tileW;
+    }
+    if (tileH > 0 && tileH < srcH) {
+        srcH = tileH;
+    }
+    if (srcW == 0 || srcH == 0) {
+        return nullptr;
+    }
+
+    auto indexAt = [&](uint32_t x, uint32_t y) -> uint32_t {
+        const size_t off = (size_t)y * lineBytes + (ci4 ? x / 2 : x);
+        if (off >= base->ImageDataSize) {
+            return 0;
+        }
+        const uint8_t byte = base->ImageData[off];
+        return ci4 ? ((x & 1) ? (byte & 0xF) : (byte >> 4)) : byte;
+    };
+
+    for (uint32_t y = 0; y < dstH; y++) {
+        const uint32_t sy = (uint32_t)((uint64_t)y * srcH / dstH);
+        for (uint32_t x = 0; x < dstW; x++) {
+            uint8_t* out = dst + ((size_t)y * dstW + x) * 4;
+            if (src[((size_t)y * dstW + x) * 4 + 3] == 0) {
+                memset(out, 0, 4);
+                continue;
+            }
+            const uint32_t sx = (uint32_t)((uint64_t)x * srcW / dstW);
+            uint8_t rgba[4];
+            unpack(entryRaw(indexAt(sx, sy)), rgba);
+            for (int r = 1; r <= 2 && rgba[3] == 0; r++) {
+                for (int dy = -r; dy <= r && rgba[3] == 0; dy++) {
+                    for (int dx = -r; dx <= r && rgba[3] == 0; dx++) {
+                        const int nx = (int)sx + dx;
+                        const int ny = (int)sy + dy;
+                        if (nx < 0 || ny < 0 || nx >= (int)srcW || ny >= (int)srcH) {
+                            continue;
+                        }
+                        uint8_t probe[4];
+                        unpack(entryRaw(indexAt((uint32_t)nx, (uint32_t)ny)), probe);
+                        if (probe[3] != 0) {
+                            memcpy(rgba, probe, 4);
+                        }
+                    }
+                }
+            }
+            out[0] = rgba[0];
+            out[1] = rgba[1];
+            out[2] = rgba[2];
+            out[3] = 255;
+        }
+    }
+    return dst;
+}
+
 void Interpreter::ImportTextureRaw(int tile, bool importReplacement) {
     const RawTexMetadata* metadata = &mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].raw_tex_metadata;
     const uint8_t* addr =
@@ -1763,20 +1904,19 @@ void Interpreter::ImportTextureRaw(int tile, bool importReplacement) {
     }
 
     // CI tiles: the pack may carry art per palette ("alt/<raster>@<palette>"); otherwise
-    // the base replacement stands in for every named palette. A palette the game built
-    // at runtime (sprite shading, fog blends) has no name and no art can be keyed to it,
-    // so the tile keeps its N64 texels rather than showing the base in the wrong colours.
+    // the base replacement stands in for every named palette. A palette the game built at
+    // runtime has no name, so unless it is a shading palette (rebuilt from the HD alpha)
+    // the tile keeps its N64 texels rather than showing the base in the wrong colors.
     if (!importReplacement) {
         if (auto variant = ResolvePaletteVariant(metadata, tile)) {
-            mRepVariant++;
             addr = variant->ImageData;
             resource = variant;
-        } else if (!TilePaletteIsNamed(tile) && UploadVanillaCi(tile)) {
-            mRepVanillaCi++;
-            if (mRepExamples.size() < 6 && metadata->resource != nullptr) {
-                mRepExamples.push_back("unnamed palette " + metadata->resource->GetInitData()->Path);
+        } else if (!TilePaletteIsNamed(tile)) {
+            if (const uint8_t* shade = ShadeReplacementByAlpha(metadata, tile)) {
+                addr = shade;
+            } else if (UploadVanillaCi(tile)) {
+                return;
             }
-            return;
         }
     }
 
@@ -6973,27 +7113,6 @@ bool Interpreter::ViewportMatchesRendererResolution() {
 #endif
 }
 
-// Every ~10 s of frames, one line on how draws resolved their replacements in the
-// last frame (numbers are per texture image set that frame, not per triangle).
-void Interpreter::ReportReplacements() {
-    auto repRm = Ship::Context::GetRawInstance()->GetResourceManager();
-    if (++mRepFrames % 600 == 0 && repRm != nullptr && repRm->IsAltAssetsEnabled()) {
-        std::string ex;
-        for (const auto& e : mRepExamples) {
-            ex += " [" + e + "]";
-        }
-        SPDLOG_INFO("replacements: hd={} pending={} none={} (last frame); imports since last report: variant={} vanillaCi={}{}", mRepAlt,
-                    mRepPending, mRepNone, mRepVariant, mRepVanillaCi, ex);
-    }
-    // hd/pending/none are per frame; variant and vanillaCi count imports, which happen
-    // once per texture, so they accumulate between reports.
-    mRepAlt = mRepPending = mRepNone = 0;
-    if (mRepFrames % 600 == 0) {
-        mRepVariant = mRepVanillaCi = 0;
-        mRepExamples.clear();
-    }
-}
-
 void Interpreter::StartFrame() {
     mWapi->GetDimensions(&mGfxCurrentWindowDimensions.width, &mGfxCurrentWindowDimensions.height, &mCurWindowPosX,
                          &mCurWindowPosY);
@@ -7135,7 +7254,6 @@ void Interpreter::Run(Gfx* commands, const std::unordered_map<Mtx*, MtxF>& mtx_r
     mFrameTextureUploads = 0;
     mFrameShaderCompiles = 0;
     mFrameUploadBytes = 0;
-    ReportReplacements();
 
     // Debug visualization of HD-replacement state (per-draw fragment tint).
     mTextureReplacementDebug = Ship::Context::GetRawInstance()->GetConsoleVariables()->GetInteger(
