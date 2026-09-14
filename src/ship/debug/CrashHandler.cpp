@@ -136,6 +136,23 @@ void CrashHandler::PrintRegisters(ucontext_t* ctx) {
     AppendLine(regbuffer);
     snprintf(regbuffer, std::size(regbuffer), "EFL: 0x%08lX", ctx->uc_mcontext.gregs[REG_EFL]);
     AppendLine(regbuffer);
+#elif defined(__aarch64__)
+    snprintf(regbuffer, std::size(regbuffer), "FAR: 0x%016llX", (unsigned long long)ctx->uc_mcontext.fault_address);
+    AppendLine(regbuffer);
+    for (int i = 0; i <= 28; i++) {
+        snprintf(regbuffer, std::size(regbuffer), "X%-2d: 0x%016llX", i, (unsigned long long)ctx->uc_mcontext.regs[i]);
+        AppendLine(regbuffer);
+    }
+    snprintf(regbuffer, std::size(regbuffer), "FP:  0x%016llX", (unsigned long long)ctx->uc_mcontext.regs[29]);
+    AppendLine(regbuffer);
+    snprintf(regbuffer, std::size(regbuffer), "LR:  0x%016llX", (unsigned long long)ctx->uc_mcontext.regs[30]);
+    AppendLine(regbuffer);
+    snprintf(regbuffer, std::size(regbuffer), "SP:  0x%016llX", (unsigned long long)ctx->uc_mcontext.sp);
+    AppendLine(regbuffer);
+    snprintf(regbuffer, std::size(regbuffer), "PC:  0x%016llX", (unsigned long long)ctx->uc_mcontext.pc);
+    AppendLine(regbuffer);
+    snprintf(regbuffer, std::size(regbuffer), "PSR: 0x%016llX", (unsigned long long)ctx->uc_mcontext.pstate);
+    AppendLine(regbuffer);
 #endif
 }
 
@@ -147,7 +164,34 @@ static void ErrorHandler(int sig, siginfo_t* sigInfo, void* data) {
     ucontext_t* ctx = static_cast<ucontext_t*>(data);
     constexpr size_t nMaxFrames = arr.size();
     size_t size = backtrace(arr.data(), nMaxFrames);
-    char** symbols = backtrace_symbols(arr.data(), nMaxFrames);
+    size_t firstFrame = 1;
+#if defined(__aarch64__)
+    if (size <= 2) {
+        const auto& mc = ctx->uc_mcontext;
+        const uint64_t stackLow = mc.sp;
+        const uint64_t stackHigh = stackLow + (8ull << 20);
+        size = 0;
+        arr[size++] = reinterpret_cast<void*>(mc.pc);
+        if (mc.regs[30] != 0) {
+            arr[size++] = reinterpret_cast<void*>(mc.regs[30]);
+        }
+        uint64_t fp = mc.regs[29];
+        while (size < nMaxFrames && (fp & 15) == 0 && fp >= stackLow && fp + 16 <= stackHigh) {
+            const uint64_t next = *reinterpret_cast<const uint64_t*>(fp);
+            const uint64_t ret = *reinterpret_cast<const uint64_t*>(fp + 8);
+            if (ret == 0) {
+                break;
+            }
+            arr[size++] = reinterpret_cast<void*>(ret);
+            if (next <= fp) {
+                break;
+            }
+            fp = next;
+        }
+        firstFrame = 0;
+    }
+#endif
+    char** symbols = backtrace_symbols(arr.data(), size);
 
     snprintf(intToCharBuffer, sizeof(intToCharBuffer), "Signal: %i", sig);
     crashHandler->AppendLine(intToCharBuffer);
@@ -170,10 +214,12 @@ static void ErrorHandler(int sig, siginfo_t* sigInfo, void* data) {
     crashHandler->PrintRegisters(ctx);
 
     crashHandler->AppendLine("Traceback:");
-    for (size_t i = 1; i < size; i++) {
+    for (size_t i = firstFrame; i < size; i++) {
         Dl_info info;
         int gotAddress = dladdr(arr[i], &info);
-        std::string functionName(symbols[i]);
+        std::string functionName = symbols != nullptr && symbols[i] != nullptr
+                                       ? std::string(symbols[i])
+                                       : StringHelper::Sprintf("%p", arr[i]);
 
         if (gotAddress != 0 && info.dli_sname != nullptr) {
             FILE* pipe;
