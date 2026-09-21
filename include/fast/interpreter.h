@@ -242,6 +242,7 @@ struct TextureCacheValue {
     uint32_t texture_id;
     uint8_t cms, cmt;
     bool linear_filter;
+    size_t bytes;
 
     std::list<struct TextureCacheMapIter>::iterator lru_location;
 };
@@ -409,6 +410,17 @@ struct GfxTextureCache {
     std::list<TextureCacheMapIter> lru;
     std::vector<uint32_t> free_texture_ids;
     std::vector<uint32_t> deferred_free_texture_ids;
+    size_t resident_bytes = 0;
+};
+
+struct GfxCacheStats {
+    uint32_t imports = 0;
+    uint64_t importNs = 0;
+    uint32_t evictions = 0;
+    size_t size = 0;
+    size_t capacity = 0;
+    size_t residentBytes = 0;
+    size_t budgetBytes = 0;
 };
 
 struct ColorCombiner {
@@ -545,6 +557,12 @@ class Interpreter {
     ColorCombiner* LookupOrCreateColorCombiner(const ColorCombinerKey& key);
     void ShaderCacheClear();
     void TextureCacheClear();
+    void SetTextureCacheMaxSize(size_t maxSize);
+    size_t GetTextureCacheMaxSize() const;
+    void SetTextureCacheBudgetBytes(size_t maxBytes);
+    size_t GetTextureCacheBudgetBytes() const;
+    size_t GetTextureCacheResidentBytes() const;
+    GfxCacheStats ConsumeGfxCacheStats();
     std::shared_ptr<Ship::IResource> ResolveResourceCached(const char* path);
     bool TextureCacheLookup(int i, const TextureCacheKey& key);
     void TextureCacheDelete(const uint8_t* origAddr);
@@ -652,6 +670,11 @@ class Interpreter {
     RenderingState mRenderingState{};
 
     GfxTextureCache mTextureCache{};
+    size_t mTextureCacheMaxSize = 0;
+    size_t mTextureCacheMaxBytes = 0;
+    void TextureCacheEvictOldest();
+    void TextureCacheAccountUpload(size_t bytes);
+    GfxCacheStats mGfxCacheStats{};
     std::unordered_map<const void*, std::shared_ptr<Ship::IResource>> mResolvedResourceCache;
     bool mResolvedResourceCacheEnabled = false;
     bool mAutoMipmapsEnabled = true;
@@ -710,6 +733,7 @@ class Interpreter {
     bool mImportIsHd = false;
     // The tile being imported, and whether it has uploaded to its cache entry yet
     int mImportTile = 0;
+    int mImportSlot = 0;
     bool mImportUploaded = false;
     // Palette textures are versioned by TLUT content and never mutated once
     // uploaded: backends queue draw commands (Metal executes at end of frame),

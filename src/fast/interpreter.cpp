@@ -773,6 +773,7 @@ void Interpreter::TextureCacheClear() {
     mTextureCache.deferred_free_texture_ids.clear();
     mTextureCache.map.clear();
     mTextureCache.lru.clear();
+    mTextureCache.resident_bytes = 0;
     mResolvedResourceCache.clear();
     mDrawTextureCache.clear();
     mVanillaTextures.clear();
@@ -783,9 +784,53 @@ void Interpreter::TextureCacheClear() {
     mTexSwappedIn.clear();
     // Pre-allocate buckets so the map never rehashes during normal operation.
     // Rehashing invalidates all iterators, including those stored in LRU entries.
-    mTextureCache.map.reserve(TEXTURE_CACHE_MAX_SIZE);
+    mTextureCache.map.reserve(mTextureCacheMaxSize != 0 ? mTextureCacheMaxSize : TEXTURE_CACHE_MAX_SIZE);
     // Null rendering-state pointers — they pointed into map nodes that are now freed.
     std::fill(std::begin(mRenderingState.mTextures), std::end(mRenderingState.mTextures), nullptr);
+}
+
+void Interpreter::SetTextureCacheMaxSize(size_t maxSize) {
+    if (maxSize == 0) {
+        maxSize = TEXTURE_CACHE_MAX_SIZE;
+    }
+    if (maxSize == mTextureCacheMaxSize) {
+        return;
+    }
+    mTextureCacheMaxSize = maxSize;
+    TextureCacheClear();
+}
+
+size_t Interpreter::GetTextureCacheMaxSize() const {
+    return mTextureCacheMaxSize;
+}
+
+void Interpreter::SetTextureCacheBudgetBytes(size_t maxBytes) {
+    mTextureCacheMaxBytes = maxBytes;
+    while (maxBytes != 0 && mTextureCache.resident_bytes > maxBytes && mTextureCache.map.size() > 1) {
+        const size_t before = mTextureCache.map.size();
+        TextureCacheEvictOldest();
+        if (mTextureCache.map.size() == before) {
+            break;
+        }
+    }
+}
+
+size_t Interpreter::GetTextureCacheBudgetBytes() const {
+    return mTextureCacheMaxBytes;
+}
+
+size_t Interpreter::GetTextureCacheResidentBytes() const {
+    return mTextureCache.resident_bytes;
+}
+
+GfxCacheStats Interpreter::ConsumeGfxCacheStats() {
+    GfxCacheStats stats = mGfxCacheStats;
+    stats.size = mTextureCache.map.size();
+    stats.capacity = mTextureCacheMaxSize;
+    stats.residentBytes = mTextureCache.resident_bytes;
+    stats.budgetBytes = mTextureCacheMaxBytes;
+    mGfxCacheStats = {};
+    return stats;
 }
 
 void Interpreter::ShaderCacheClear() {
@@ -1011,16 +1056,8 @@ bool Interpreter::TextureCacheLookup(int i, const TextureCacheKey& key) {
         return true;
     }
 
-    if (mTextureCache.map.size() >= TEXTURE_CACHE_MAX_SIZE) {
-        // Remove the texture that was least recently used
-        it = mTextureCache.lru.front().it;
-        mTextureCache.deferred_free_texture_ids.push_back(it->second.texture_id);
-        for (int j = 0; j < SHADER_MAX_TEXTURES; j++) {
-            if (mRenderingState.mTextures[j] == &*it)
-                mRenderingState.mTextures[j] = nullptr;
-        }
-        mTextureCache.map.erase(it);
-        mTextureCache.lru.pop_front();
+    if (mTextureCache.map.size() >= mTextureCacheMaxSize) {
+        TextureCacheEvictOldest();
     }
 
     uint32_t texture_id;
@@ -1034,12 +1071,60 @@ bool Interpreter::TextureCacheLookup(int i, const TextureCacheKey& key) {
     it = mTextureCache.map.insert(std::make_pair(key, TextureCacheValue())).first;
     TextureCacheNode* node = &*it;
     node->second.texture_id = texture_id;
+    node->second.bytes = 0;
     node->second.lru_location = mTextureCache.lru.insert(mTextureCache.lru.end(), { it });
 
     mRapi->SelectTexture(i, texture_id);
     mRapi->SetSamplerParameters(i, false, 0, 0);
     *n = node;
     return false;
+}
+
+void Interpreter::TextureCacheEvictOldest() {
+    if (mTextureCache.lru.empty()) {
+        return;
+    }
+    auto lruIt = mTextureCache.lru.begin();
+    for (; lruIt != mTextureCache.lru.end(); ++lruIt) {
+        bool bound = false;
+        for (int j = 0; j < SHADER_MAX_TEXTURES; j++) {
+            if (mRenderingState.mTextures[j] == &*lruIt->it) {
+                bound = true;
+                break;
+            }
+        }
+        if (!bound) {
+            break;
+        }
+    }
+    if (lruIt == mTextureCache.lru.end()) {
+        return;
+    }
+    mGfxCacheStats.evictions++;
+    TextureCacheMap::iterator it = lruIt->it;
+    mTextureCache.deferred_free_texture_ids.push_back(it->second.texture_id);
+    mTextureCache.resident_bytes -= std::min(mTextureCache.resident_bytes, it->second.bytes);
+    mTextureCache.map.erase(it);
+    mTextureCache.lru.erase(lruIt);
+}
+
+void Interpreter::TextureCacheAccountUpload(size_t bytes) {
+    TextureCacheNode* node = mRenderingState.mTextures[mImportSlot];
+    if (node != nullptr) {
+        mTextureCache.resident_bytes -= std::min(mTextureCache.resident_bytes, node->second.bytes);
+        node->second.bytes = bytes;
+        mTextureCache.resident_bytes += bytes;
+    }
+    if (mTextureCacheMaxBytes == 0) {
+        return;
+    }
+    while (mTextureCache.resident_bytes > mTextureCacheMaxBytes && mTextureCache.map.size() > 1) {
+        const size_t before = mTextureCache.map.size();
+        TextureCacheEvictOldest();
+        if (mTextureCache.map.size() == before) {
+            break; // everything left is bound
+        }
+    }
 }
 
 // The replacement to draw a CI tile with when the pack has art for the palette it is
@@ -1202,6 +1287,7 @@ void Interpreter::TextureCacheDelete(const uint8_t* origAddr) {
                 // (gSPInvalidateTexCache) after the texture was already drawn, so reusing
                 // the id now would corrupt the earlier draw on deferred backends.
                 mTextureCache.deferred_free_texture_ids.push_back(it->second.texture_id);
+                mTextureCache.resident_bytes -= std::min(mTextureCache.resident_bytes, it->second.bytes);
                 mTextureCache.map.erase(it->first);
                 again = true;
                 break;
@@ -2487,6 +2573,12 @@ void Interpreter::UploadBaseTexture(const uint8_t* rgba32Buf, uint32_t width, ui
     mImportUploaded = true;
     mFrameTextureUploads++;
     mFrameUploadBytes += (size_t)width * height * 4;
+    {
+        const size_t base = (size_t)width * height * 4;
+        const bool mips = mCurrentMipExtraLevels > 0 ||
+                          (mAutoMipmapsEnabled && mImportIsHd && !mImportIndexed && width > 1 && height > 1);
+        TextureCacheAccountUpload(mips ? base + base / 3 : base);
+    }
     if (mCurrentMipExtraLevels > 0) {
         mMipBaseWidth = width;
         mMipBaseHeight = height;
@@ -2690,6 +2782,7 @@ void Interpreter::UploadMipChain(uint32_t baseTile) {
 
 void Interpreter::ImportTexture(int i, int tile, bool importReplacement) {
     mImportTile = tile;
+    mImportSlot = i;
     uint8_t fmt = mRdp->texture_tile[tile].fmt;
     uint8_t siz = mRdp->texture_tile[tile].siz;
     uint32_t texFlags = mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].tex_flags;
@@ -2787,6 +2880,16 @@ void Interpreter::ImportTexture(int i, int tile, bool importReplacement) {
         }
     } dropUnlessUploaded{ this, i };
 
+    struct CountImport {
+        Interpreter* gfx;
+        std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+        ~CountImport() {
+            gfx->mGfxCacheStats.imports++;
+            gfx->mGfxCacheStats.importNs +=
+                std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count();
+        }
+    } countImport{ this };
+
     // Past the lookup on a miss means this replacement will upload now — count it
     // against this frame's budget so further first-time replacements are deferred.
     if (importReplacement) {
@@ -2879,6 +2982,7 @@ void Interpreter::ImportTexture(int i, int tile, bool importReplacement) {
 }
 
 void Interpreter::ImportTextureMask(int i, int tile) {
+    mImportSlot = i;
     uint32_t tmemIndex = mRdp->texture_tile[tile].tmem_index;
     RawTexMetadata metadata = mRdp->loaded_texture[tmemIndex].raw_tex_metadata;
 
@@ -7335,7 +7439,8 @@ void Interpreter::Init(class GfxWindowBackend* wapi, class GfxRenderingAPI* rapi
     ucode_handler_index = UcodeHandlers::ucode_f3dex2;
 
     // Pre-allocate texture cache buckets to prevent rehash-induced iterator invalidation.
-    mTextureCache.map.reserve(TEXTURE_CACHE_MAX_SIZE);
+    mTextureCacheMaxSize = TEXTURE_CACHE_MAX_SIZE;
+    mTextureCache.map.reserve(mTextureCacheMaxSize);
 }
 
 void Interpreter::Destroy() {
