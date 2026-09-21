@@ -3,6 +3,7 @@
 #include "ship/resource/File.h"
 #include "ship/resource/archive/Archive.h"
 #include <algorithm>
+#include <chrono>
 #include <thread>
 #include "ship/utils/StringHelper.h"
 #include "ship/utils/Utils.h"
@@ -152,6 +153,7 @@ std::shared_ptr<IResource> ResourceManager::LoadResourceProcess(const ResourceId
     // Get the file from the OTR. It may be null when the resource exists only as a `.meta`
     // alias (no real file at this path); fall through so the loader can resolve the alias,
     // but only when a `.meta` for this path actually exists.
+    const auto loadStart = std::chrono::steady_clock::now();
     auto file = LoadFileProcess(identifier.Path);
     if (file == nullptr && !mArchiveManager->HasFile(identifier.Path + ".meta")) {
         SPDLOG_TRACE("Failed to load resource file at path {}", identifier.Path);
@@ -161,6 +163,11 @@ std::shared_ptr<IResource> ResourceManager::LoadResourceProcess(const ResourceId
 
     // Transform the raw data into a resource
     auto resource = GetResourceLoader()->LoadResource(identifier.Path, file, initData);
+
+    mStatLoads.fetch_add(1, std::memory_order_relaxed);
+    mStatLoadNs.fetch_add(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - loadStart).count(),
+        std::memory_order_relaxed);
 
     // Another thread could have loaded the resource while we were processing, so we want to check before setting to
     // the cache.
@@ -233,11 +240,37 @@ ResourceManager::LoadResourceAsync(const std::string& filePath, bool loadExact, 
 
 std::shared_ptr<IResource> ResourceManager::LoadResource(const ResourceIdentifier& identifier, bool loadExact,
                                                          std::shared_ptr<ResourceInitData> initData) {
+    // The cache is keyed on the stripped path, so strip before the hit check below.
+    if (OtrSignatureCheck(identifier.Path.c_str())) {
+        return LoadResource({ identifier.Path.substr(7), identifier.Owner, identifier.Parent }, loadExact, initData);
+    }
+
+    // A hit is a lookup; a miss parks this thread on the pool until the load lands, and that
+    // wait is what a frame profiler wants to see.
+    if (auto cached = GetCachedResource(identifier, loadExact)) {
+        return cached;
+    }
+
+    const auto waitStart = std::chrono::steady_clock::now();
     auto resource = LoadResourceAsync(identifier, loadExact, BS::pr::highest, initData).get();
+    mStatBlockingCalls.fetch_add(1, std::memory_order_relaxed);
+    mStatBlockingNs.fetch_add(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - waitStart).count(),
+        std::memory_order_relaxed);
+
     if (resource == nullptr) {
         SPDLOG_TRACE("Failed to load resource file at path {}", identifier.Path);
     }
     return resource;
+}
+
+ResourceLoadStats ResourceManager::ConsumeLoadStats() {
+    ResourceLoadStats stats;
+    stats.Loads = mStatLoads.exchange(0, std::memory_order_relaxed);
+    stats.LoadNs = mStatLoadNs.exchange(0, std::memory_order_relaxed);
+    stats.BlockingCalls = mStatBlockingCalls.exchange(0, std::memory_order_relaxed);
+    stats.BlockingNs = mStatBlockingNs.exchange(0, std::memory_order_relaxed);
+    return stats;
 }
 
 std::shared_ptr<IResource> ResourceManager::LoadResource(const std::string& filePath, bool loadExact,

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <unordered_map>
 #include <unordered_set>
 #include <string>
@@ -73,6 +74,23 @@ struct ResourceIdentifier {
  */
 struct ResourceIdentifierHash {
     size_t operator()(const ResourceIdentifier& rcd) const;
+};
+
+/**
+ * @brief Activity counters for loads that reached an archive, and for callers that waited on them.
+ *
+ * Handed out by ResourceManager::ConsumeLoadStats(), which zeroes them, so a caller polling
+ * once per frame sees exactly that frame's loads.
+ */
+struct ResourceLoadStats {
+    /** @brief Resources read from an archive and deserialized (cache misses), on any thread. */
+    uint32_t Loads = 0;
+    /** @brief Nanoseconds spent reading and deserializing them, summed across pool threads. */
+    uint64_t LoadNs = 0;
+    /** @brief Synchronous LoadResource() calls that missed the cache and waited on the pool. */
+    uint32_t BlockingCalls = 0;
+    /** @brief Nanoseconds those calls spent waiting. */
+    uint64_t BlockingNs = 0;
 };
 
 /**
@@ -412,6 +430,12 @@ class ResourceManager {
      */
     std::shared_ptr<BS::thread_pool> GetThreadPool();
 
+    /**
+     * @brief Returns the load counters accumulated since the previous call, and zeroes them.
+     * @return Loads, blocking calls, and the time each cost since the last consume.
+     */
+    ResourceLoadStats ConsumeLoadStats();
+
   protected:
     std::shared_ptr<std::vector<std::shared_ptr<IResource>>> LoadResourcesProcess(const ResourceFilter& filter);
     void UnloadResourcesProcess(const ResourceFilter& filter);
@@ -434,5 +458,10 @@ class ResourceManager {
     // Private information for which owner and archive are default.
     uintptr_t mDefaultCacheOwner = 0;
     std::shared_ptr<Archive> mDefaultCacheArchive = nullptr;
+    // Load counters; pool threads bump the first pair, blocked callers the second.
+    std::atomic<uint32_t> mStatLoads{ 0 };
+    std::atomic<uint64_t> mStatLoadNs{ 0 };
+    std::atomic<uint32_t> mStatBlockingCalls{ 0 };
+    std::atomic<uint64_t> mStatBlockingNs{ 0 };
 };
 } // namespace Ship

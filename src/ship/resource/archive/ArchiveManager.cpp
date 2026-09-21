@@ -48,7 +48,15 @@ std::shared_ptr<File> ArchiveManager::LoadFile(const std::string& filePath) {
 }
 
 std::shared_ptr<File> ArchiveManager::LoadFile(uint64_t hash) {
-    auto archive = mFileToArchive[hash];
+    std::shared_ptr<Archive> archive;
+    {
+        std::shared_lock lock(mIndexMutex);
+        auto it = mFileToArchive.find(hash);
+        if (it == mFileToArchive.end()) {
+            return nullptr;
+        }
+        archive = it->second;
+    }
     if (archive == nullptr) {
         return nullptr;
     }
@@ -61,14 +69,18 @@ bool ArchiveManager::HasFile(const std::string& filePath) {
 }
 
 bool ArchiveManager::HasFile(uint64_t hash) {
+    std::shared_lock lock(mIndexMutex);
     return mFileToArchive.count(hash) > 0;
 }
 
 std::shared_ptr<Archive> ArchiveManager::GetArchiveFromFile(const std::string& filePath) {
-    return mFileToArchive[CRC64(filePath.c_str())];
+    std::shared_lock lock(mIndexMutex);
+    auto it = mFileToArchive.find(CRC64(filePath.c_str()));
+    return it != mFileToArchive.end() ? it->second : nullptr;
 }
 
 int32_t ArchiveManager::GetFilePriority(const std::string& filePath) {
+    std::shared_lock lock(mIndexMutex);
     auto it = mFileToArchive.find(CRC64(filePath.c_str()));
     if (it == mFileToArchive.end() || it->second == nullptr) {
         return -1;
@@ -87,6 +99,7 @@ std::shared_ptr<std::vector<std::string>> ArchiveManager::ListFiles(const std::s
 std::shared_ptr<std::vector<std::string>> ArchiveManager::ListFiles(const std::list<std::string>& includes,
                                                                     const std::list<std::string>& excludes) {
     auto list = std::make_shared<std::vector<std::string>>();
+    std::shared_lock lock(mIndexMutex);
     for (const auto& [hash, path] : mHashes) {
         if (includes.empty() && excludes.empty()) {
             list->push_back(path);
@@ -119,6 +132,7 @@ std::shared_ptr<std::vector<std::string>> ArchiveManager::ListFiles(const std::l
 
 std::shared_ptr<std::vector<std::string>> ArchiveManager::ListDirectories(const std::string& searchMask) {
     auto list = std::make_shared<std::vector<std::string>>();
+    std::shared_lock lock(mIndexMutex);
     for (const std::string& dir : mDirectories) {
         if (glob_match(searchMask.c_str(), dir.c_str())) {
             list->push_back(dir);
@@ -149,8 +163,12 @@ void ArchiveManager::ResetVirtualFileSystem() {
     auto archives = mArchives;
     mArchives.clear();
     mGameVersions.clear();
-    mHashes.clear();
-    mFileToArchive.clear();
+    {
+        std::unique_lock lock(mIndexMutex);
+        mHashes.clear();
+        mDirectories.clear();
+        mFileToArchive.clear();
+    }
     for (const auto& archive : archives) {
         archive->Unload();
         archive->Load();
@@ -163,6 +181,7 @@ bool ArchiveManager::WriteFile(std::shared_ptr<Archive> archive, const std::stri
     if (archive) {
         if (archive->WriteFile(filePath, data)) {
             auto hash = CRC64(filePath.c_str());
+            std::unique_lock lock(mIndexMutex);
             mHashes[hash] = filePath;
             mFileToArchive[hash] = archive;
             return true; // Successfully wrote file
@@ -201,6 +220,7 @@ void ArchiveManager::SetArchives(std::shared_ptr<std::vector<std::shared_ptr<Arc
 }
 
 const std::string* ArchiveManager::HashToString(uint64_t hash) const {
+    std::shared_lock lock(mIndexMutex);
     auto it = mHashes.find(hash);
     return it != mHashes.end() ? &it->second : nullptr;
 }
@@ -289,14 +309,17 @@ std::shared_ptr<Archive> ArchiveManager::AddArchive(std::shared_ptr<Archive> arc
         mGameVersions.push_back(archive->GetGameVersion());
     }
     const auto fileList = archive->ListFiles();
-    for (auto& [hash, filename] : *fileList.get()) {
-        mHashes[hash] = filename;
-        mFileToArchive[hash] = archive;
+    {
+        std::unique_lock lock(mIndexMutex);
+        for (auto& [hash, filename] : *fileList.get()) {
+            mHashes[hash] = filename;
+            mFileToArchive[hash] = archive;
 
-        size_t lastSlash = filename.find_last_of('/');
-        if (lastSlash != std::string::npos) {
-            std::string dir = filename.substr(0, lastSlash);
-            mDirectories.insert(dir);
+            size_t lastSlash = filename.find_last_of('/');
+            if (lastSlash != std::string::npos) {
+                std::string dir = filename.substr(0, lastSlash);
+                mDirectories.insert(dir);
+            }
         }
     }
     return archive;
