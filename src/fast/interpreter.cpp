@@ -2705,9 +2705,38 @@ void Interpreter::BuildMipChain(const uint8_t* rgba32Buf, uint32_t width, uint32
     }
 }
 
-// Nearest-neighbour resample, for fitting a mip level's art to the size the
-// chain needs at that level (a replacement base is several times the N64 size).
+// Fits a mip level's art to the size the chain needs at that level; a replacement
+// base is several times the N64 size. Averages when shrinking, nearest when growing.
 static void ResampleRgba32(const uint8_t* src, uint32_t sw, uint32_t sh, uint8_t* dst, uint32_t dw, uint32_t dh) {
+    if (dw < sw || dh < sh) {
+        // Shrinking: average the texels each destination one covers. Point sampling keeps
+        // one texel in N, which aliases and drags the level's colour off the art it stands for.
+        for (uint32_t y = 0; y < dh; y++) {
+            const uint32_t y0 = (uint32_t)(((uint64_t)y * sh) / dh);
+            const uint32_t y1 = std::max(y0 + 1, (uint32_t)(((uint64_t)(y + 1) * sh) / dh));
+            for (uint32_t x = 0; x < dw; x++) {
+                const uint32_t x0 = (uint32_t)(((uint64_t)x * sw) / dw);
+                const uint32_t x1 = std::max(x0 + 1, (uint32_t)(((uint64_t)(x + 1) * sw) / dw));
+                uint32_t acc[4] = { 0, 0, 0, 0 };
+                uint32_t n = 0;
+                for (uint32_t sy = y0; sy < y1; sy++) {
+                    for (uint32_t sx = x0; sx < x1; sx++) {
+                        const uint8_t* p = src + ((size_t)sy * sw + sx) * 4;
+                        acc[0] += p[0];
+                        acc[1] += p[1];
+                        acc[2] += p[2];
+                        acc[3] += p[3];
+                        n++;
+                    }
+                }
+                uint8_t* d = dst + ((size_t)y * dw + x) * 4;
+                for (int c = 0; c < 4; c++) {
+                    d[c] = (uint8_t)(acc[c] / n);
+                }
+            }
+        }
+        return;
+    }
     for (uint32_t y = 0; y < dh; y++) {
         const uint32_t sy = (uint32_t)(((uint64_t)y * sh) / dh);
         for (uint32_t x = 0; x < dw; x++) {
