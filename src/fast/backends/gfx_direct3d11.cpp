@@ -14,6 +14,7 @@
 #include <dxgi1_3.h>
 #include <d3d11.h>
 #include <d3dcompiler.h>
+#include <string_view>
 
 #ifndef _LANGUAGE_C
 #define _LANGUAGE_C
@@ -397,6 +398,7 @@ void GfxRenderingAPIDX11::LoadShader(struct ShaderProgram* new_prg) {
 
 void GfxRenderingAPIDX11::ClearShaderCache() {
     mShaderProgramPool.clear();
+    mVertexShadersBySource.clear();
 }
 
 struct ShaderProgram* GfxRenderingAPIDX11::CreateAndLoadNewShader(uint64_t shader_id0, uint64_t shader_id1) {
@@ -418,11 +420,37 @@ struct ShaderProgram* GfxRenderingAPIDX11::CreateAndLoadNewShader(uint64_t shade
 #if DEBUG_D3D
     UINT compile_flags = D3DCOMPILE_DEBUG;
 #else
-    UINT compile_flags = D3DCOMPILE_OPTIMIZATION_LEVEL2;
+    // FXC's optimizer is most of the compile time, and the driver optimizes the bytecode again anyway.
+    UINT compile_flags = D3DCOMPILE_SKIP_OPTIMIZATION;
 #endif
 
-    HRESULT hr = mD3dCompile(buf, len, nullptr, nullptr, nullptr, "VSMain", "vs_4_0", compile_flags, 0,
-                             vs.GetAddressOf(), error_blob.GetAddressOf());
+    // The vertex shader is the source up to the end of VSMain. HLSL declares before use,
+    // so nothing after it can change what it compiles to.
+    size_t vsLen = len;
+    const std::string_view source(buf, len);
+    const size_t vsMain = source.find("VSMain(");
+    const size_t vsBody = vsMain == std::string_view::npos ? vsMain : source.find('{', vsMain);
+    if (vsBody != std::string_view::npos) {
+        int depth = 0;
+        for (size_t i = vsBody; i < len; i++) {
+            if (buf[i] == '{') {
+                depth++;
+            } else if (buf[i] == '}' && --depth == 0) {
+                vsLen = i + 1;
+                break;
+            }
+        }
+    }
+    std::string vsSource(buf, vsLen);
+
+    HRESULT hr = S_OK;
+    const auto sharedVs = mVertexShadersBySource.find(vsSource);
+    if (sharedVs != mVertexShadersBySource.end()) {
+        vs = sharedVs->second.code;
+    } else {
+        hr = mD3dCompile(vsSource.data(), vsSource.size(), nullptr, nullptr, nullptr, "VSMain", "vs_4_0", compile_flags,
+                         0, vs.GetAddressOf(), error_blob.GetAddressOf());
+    }
 
     if (FAILED(hr)) {
         char* err = (char*)error_blob->GetBufferPointer();
@@ -441,8 +469,13 @@ struct ShaderProgram* GfxRenderingAPIDX11::CreateAndLoadNewShader(uint64_t shade
 
     struct ShaderProgramD3D11* prg = &mShaderProgramPool[std::make_pair(shader_id0, shader_id1)];
 
-    ThrowIfFailed(mDevice->CreateVertexShader(vs->GetBufferPointer(), vs->GetBufferSize(), nullptr,
-                                              prg->vertex_shader.GetAddressOf()));
+    if (sharedVs != mVertexShadersBySource.end()) {
+        prg->vertex_shader = sharedVs->second.shader;
+    } else {
+        ThrowIfFailed(mDevice->CreateVertexShader(vs->GetBufferPointer(), vs->GetBufferSize(), nullptr,
+                                                  prg->vertex_shader.GetAddressOf()));
+        mVertexShadersBySource.emplace(std::move(vsSource), VertexShaderD3D11{ vs, prg->vertex_shader });
+    }
     ThrowIfFailed(mDevice->CreatePixelShader(ps->GetBufferPointer(), ps->GetBufferSize(), nullptr,
                                              prg->pixel_shader.GetAddressOf()));
 

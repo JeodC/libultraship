@@ -864,52 +864,15 @@ bool GfxWindowBackendDXGI::IsFrameReady() {
         // vsyncs_to_wait);
 
         if (vsyncs_to_wait <= 0) {
-            // Too late
-
-            if ((int64_t)(mFrameTimeStamp / FRAME_INTERVAL_NS_DENOMINATOR - last_end_ns) < -66666666) {
-                // The application must have been paused or similar
-                vsyncs_to_wait = round(((double)FRAME_INTERVAL_NS_NUMERATOR / FRAME_INTERVAL_NS_DENOMINATOR) /
-                                       estimated_vsync_interval_ns);
-                if (vsyncs_to_wait < 1) {
-                    vsyncs_to_wait = 1;
-                }
-                mFrameTimeStamp =
-                    FRAME_INTERVAL_NS_DENOMINATOR * (last_end_ns + vsyncs_to_wait * estimated_vsync_interval_ns);
-            } else {
-                // Drop frame
-                // printf("Dropping frame\n");
-                mDroppedFrame = true;
-                return false;
+            // Too late: move the timeline up to the next vsync instead of dropping the frame. Dropping
+            // could settle into presenting one interpolated frame per game frame after a short hitch.
+            vsyncs_to_wait = round(((double)FRAME_INTERVAL_NS_NUMERATOR / FRAME_INTERVAL_NS_DENOMINATOR) /
+                                   estimated_vsync_interval_ns);
+            if (vsyncs_to_wait < 1) {
+                vsyncs_to_wait = 1;
             }
-        }
-        double orig_wait = vsyncs_to_wait;
-        if (floor(vsyncs_to_wait) != vsyncs_to_wait) {
-            uint64_t left = last_end_ns + floor(vsyncs_to_wait) * estimated_vsync_interval_ns;
-            uint64_t right = last_end_ns + ceil(vsyncs_to_wait) * estimated_vsync_interval_ns;
-            uint64_t adjusted_desired_time =
-                mFrameTimeStamp / FRAME_INTERVAL_NS_DENOMINATOR +
-                (last_end_ns + (FRAME_INTERVAL_NS_NUMERATOR / FRAME_INTERVAL_NS_DENOMINATOR) >
-                         mFrameTimeStamp / FRAME_INTERVAL_NS_DENOMINATOR
-                     ? 2000000
-                     : -2000000);
-            int64_t diff_left = adjusted_desired_time - left;
-            int64_t diff_right = right - adjusted_desired_time;
-            if (diff_left < 0) {
-                diff_left = -diff_left;
-            }
-            if (diff_right < 0) {
-                diff_right = -diff_right;
-            }
-            if (diff_left < diff_right) {
-                vsyncs_to_wait = floor(vsyncs_to_wait);
-            } else {
-                vsyncs_to_wait = ceil(vsyncs_to_wait);
-            }
-            if (vsyncs_to_wait == 0) {
-                // printf("vsyncs_to_wait became 0 so dropping frame\n");
-                mDroppedFrame = true;
-                return false;
-            }
+            mFrameTimeStamp =
+                FRAME_INTERVAL_NS_DENOMINATOR * (last_end_ns + vsyncs_to_wait * estimated_vsync_interval_ns);
         }
     }
     return true;

@@ -6,6 +6,7 @@
 #include "../interpreter.h"
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include "gfx_rendering_api.h"
 #include "d3d11.h"
 #include "d3dcompiler.h"
@@ -183,6 +184,12 @@ class GfxRenderingAPIDX11 final : public GfxRenderingAPI {
     PerPrimDepthCB mPerPrimDepthCbData;
 
     std::map<std::pair<uint64_t, uint64_t>, struct ShaderProgramD3D11> mShaderProgramPool;
+
+    struct VertexShaderD3D11 {
+        Microsoft::WRL::ComPtr<ID3DBlob> code;
+        Microsoft::WRL::ComPtr<ID3D11VertexShader> shader;
+    };
+    std::unordered_map<std::string, VertexShaderD3D11> mVertexShadersBySource;
 
     std::vector<struct TextureData> mTextures;
     int mCurrentTile;
