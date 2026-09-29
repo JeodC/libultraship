@@ -274,7 +274,8 @@ void ScriptLoader::Compile(const std::shared_ptr<Archive>& archive) {
             // tcc_relocate() reports its own diagnostics (undefined symbols,
             // missing runtime objects such as bt-log.o) through the error
             // callback, so surface them alongside the generic failure.
-            throw std::runtime_error(errorLog.empty() ? std::string(e.what()) : std::string(e.what()) + "\n" + errorLog);
+            throw std::runtime_error(errorLog.empty() ? std::string(e.what())
+                                                      : std::string(e.what()) + "\n" + errorLog);
         }
 #endif // DISABLE_TCC_COMPILER
     }

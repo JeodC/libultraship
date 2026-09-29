@@ -853,8 +853,8 @@ class Interpreter {
     int mFrameTextureUploads = 0;
     int mFrameShaderCompiles = 0;
     size_t mFrameUploadBytes = 0;
-    bool mAllowReplacementDefer = false; // set by the draw path only for non-indexed bases
-    bool mDeferredReplacementUpload = false; // set by ImportTexture when it deferred an upload
+    bool mAllowReplacementDefer = false;       // set by the draw path only for non-indexed bases
+    bool mDeferredReplacementUpload = false;   // set by ImportTexture when it deferred an upload
     bool mReplacementUploadedThisCall = false; // set by ImportTexture when it uploaded an HD this call
 
     // Debug visualization of HD replacement state, tinting each draw in the fragment
@@ -877,7 +877,7 @@ class Interpreter {
     std::unordered_set<std::string> mTexPrefetched; // prefix groups already queued
     // Port-supplied: the group prefix to prefetch when a replacement is first requested
     std::function<std::string(const std::string&)> mReplacementGroupOf;
-    std::vector<std::string> mAltFiles;             // every replacement in the archives, sorted
+    std::vector<std::string> mAltFiles; // every replacement in the archives, sorted
     bool mAltFilesListed = false;
     // Resource path of the TLUT in each CI4 bank (CI8 uses bank 0), empty when it was
     // loaded from a raw pointer. Names the "alt/<raster>@<palette>" replacement variant.
@@ -914,9 +914,9 @@ class Interpreter {
     std::vector<uint8_t> mMipBaseCopy;
     // The part of a raster a tile's load covers, in raster bytes and rows.
     struct RasterRegion {
-        uint32_t xBytes;      // where the loaded rows start within a raster row
-        uint32_t y;           // first raster row loaded
-        uint32_t lineBytes;   // raster bytes per loaded row
+        uint32_t xBytes;    // where the loaded rows start within a raster row
+        uint32_t y;         // first raster row loaded
+        uint32_t lineBytes; // raster bytes per loaded row
         uint32_t rows;
         uint32_t strideBytes; // raster bytes per row of the whole image
         uint32_t width;       // texels to upload, clipped to the raster and the tile

@@ -232,7 +232,8 @@ struct ShaderProgram* GfxRenderingAPIMetal::CreateAndLoadNewShader(uint64_t shad
 
     if (library == nullptr || error != nullptr) {
         SPDLOG_ERROR("Failed to compile shader library, error {}",
-                     error ? error->localizedDescription()->cString(NS::UTF8StringEncoding) : "(null library, no error)");
+                     error ? error->localizedDescription()->cString(NS::UTF8StringEncoding)
+                           : "(null library, no error)");
         autorelease_pool->release();
         return nullptr;
     }
@@ -588,8 +589,8 @@ void GfxRenderingAPIMetal::DrawTriangles(float buf_vbo[], size_t buf_vbo_len, si
         static bool warned = false;
         if (!warned) {
             warned = true;
-            SPDLOG_WARN("metal: vertex batch ({} B) exceeds buffer ({} B); dropping this frame, growing next",
-                        needed, mVertexBufferCapacity[mCurrentVertexBufferPoolIndex]);
+            SPDLOG_WARN("metal: vertex batch ({} B) exceeds buffer ({} B); dropping this frame, growing next", needed,
+                        mVertexBufferCapacity[mCurrentVertexBufferPoolIndex]);
         }
         return;
     }
