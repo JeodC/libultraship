@@ -154,6 +154,8 @@ class GfxRenderingAPIVK final : public GfxRenderingAPI {
   public:
     GfxRenderingAPIVK(std::shared_ptr<Ship::ConsoleVariable> consoleVariable = nullptr,
                       std::shared_ptr<Ship::ResourceManager> resourceManager = nullptr);
+
+    std::shared_ptr<Ship::ConsoleVariable> ConsoleVariables() const;
     ~GfxRenderingAPIVK() override = default;
     const char* GetName() override;
     int GetMaxTextureSize() override;

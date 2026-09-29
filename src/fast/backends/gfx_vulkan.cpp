@@ -33,6 +33,7 @@
 
 #include "libultraship/libultra/abi.h"
 #include "ship/config/ConsoleVariable.h"
+#include "ship/Context.h"
 #include "ship/resource/ResourceManager.h"
 #include "ship/resource/factory/ShaderFactory.h"
 #include <sstream>
@@ -53,6 +54,20 @@ GfxRenderingAPIVK::GfxRenderingAPIVK(std::shared_ptr<Ship::ConsoleVariable> cons
                                      std::shared_ptr<Ship::ResourceManager> resourceManager)
     : mConsoleVariable(std::move(consoleVariable)) {
     sVKResourceManager = std::move(resourceManager);
+}
+
+static std::shared_ptr<Ship::ResourceManager> vk_resource_manager() {
+    if (sVKResourceManager != nullptr) {
+        return sVKResourceManager;
+    }
+    return Ship::Context::GetRawInstance()->GetResourceManager();
+}
+
+std::shared_ptr<Ship::ConsoleVariable> GfxRenderingAPIVK::ConsoleVariables() const {
+    if (mConsoleVariable != nullptr) {
+        return mConsoleVariable;
+    }
+    return Ship::Context::GetRawInstance()->GetConsoleVariables();
 }
 
 // MARK: - Shader generation (prism -> Vulkan GLSL -> SPIR-V via shaderc)
@@ -198,7 +213,7 @@ static std::optional<std::string> vulkan_include_fs(const std::string& path) {
     init->Type = (uint32_t)Ship::ResourceType::Shader;
     init->ByteOrder = Ship::Endianness::Native;
     init->Format = RESOURCE_FORMAT_BINARY;
-    auto res = std::static_pointer_cast<Ship::Shader>(sVKResourceManager->LoadResource(path, false, init));
+    auto res = std::static_pointer_cast<Ship::Shader>(vk_resource_manager()->LoadResource(path, false, init));
     if (res == nullptr) {
         return std::nullopt;
     }
@@ -281,7 +296,7 @@ static std::string BuildVulkanShader(const CCFeatures& cc_features, bool vertex,
         path = std::string(shaderName) + ".glsl";
     }
 
-    auto res = std::static_pointer_cast<Ship::Shader>(sVKResourceManager->LoadResource(path, false, init));
+    auto res = std::static_pointer_cast<Ship::Shader>(vk_resource_manager()->LoadResource(path, false, init));
     if (res == nullptr) {
         SPDLOG_ERROR("Failed to load the Vulkan shader template, missing shaders/vulkan in the o2r?");
         abort();
@@ -1648,7 +1663,7 @@ void GfxRenderingAPIVK::DrawTriangles(float buf_vbo[], size_t buf_vbo_len, size_
     if (mCurrentZmodeDecal && !mCurrentStrictDecal) {
         const int n64modeFactor = 120;
         const int noVanishFactor = 100;
-        switch (mConsoleVariable->GetInteger(CVAR_Z_FIGHTING_MODE, 0)) {
+        switch (ConsoleVariables()->GetInteger(CVAR_Z_FIGHTING_MODE, 0)) {
             case 1:
                 bias = -1.0f * (float)mRenderTargetHeight / n64modeFactor;
                 break;
