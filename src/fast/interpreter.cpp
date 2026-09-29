@@ -1012,9 +1012,9 @@ std::shared_ptr<Ship::IResource> Interpreter::AcquireDrawTexture(const char* nam
         if (auto res = fut.get()) {
             auto sub = mTexSubmitted.find(name);
             if (sub != mTexSubmitted.end()) {
-                const auto waited =
-                    std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - sub->second)
-                        .count();
+                const auto waited = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                        std::chrono::steady_clock::now() - sub->second)
+                                        .count();
                 if (waited >= 2000) {
                     SPDLOG_INFO("hd ready {} after {} ms", name, waited);
                 }
@@ -1157,9 +1157,10 @@ std::shared_ptr<Fast::Texture> Interpreter::LoadPaletteVariant(const RawTexMetad
     const std::string variantPath =
         metadata->resource->GetInitData()->Path + "@" + (slash == std::string::npos ? tlut : tlut.substr(slash + 1));
     const auto t0 = std::chrono::steady_clock::now();
-    auto variant =
-        std::static_pointer_cast<Fast::Texture>(Ship::Context::GetRawInstance()->GetResourceManager()->LoadResource(variantPath, /*loadExact=*/true));
-    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+    auto variant = std::static_pointer_cast<Fast::Texture>(
+        Ship::Context::GetRawInstance()->GetResourceManager()->LoadResource(variantPath, /*loadExact=*/true));
+    const auto ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
     if (ms >= 50) {
         SPDLOG_INFO("variant load {} took {} ms", variantPath, ms);
     }
@@ -1365,9 +1366,8 @@ static bool IsPyramidLike(uint32_t width, uint32_t height, uint32_t tileW, uint3
 
 void Interpreter::ImportTextureRgba16(int tile, bool importReplacement) {
     const RawTexMetadata* metadata = &mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].raw_tex_metadata;
-    const uint8_t* addr =
-        importReplacement ? MaskedReplacementData(metadata)
-                          : mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].addr;
+    const uint8_t* addr = importReplacement ? MaskedReplacementData(metadata)
+                                            : mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].addr;
 
     if (addr == nullptr) {
         SPDLOG_ERROR("ImportTextureRgba16: null texture address for tile {}", tile);
@@ -1439,9 +1439,8 @@ void Interpreter::ImportTextureRgba16(int tile, bool importReplacement) {
 
 void Interpreter::ImportTextureRgba32(int tile, bool importReplacement) {
     const RawTexMetadata* metadata = &mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].raw_tex_metadata;
-    const uint8_t* addr =
-        importReplacement ? MaskedReplacementData(metadata)
-                          : mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].addr;
+    const uint8_t* addr = importReplacement ? MaskedReplacementData(metadata)
+                                            : mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].addr;
 
     if (addr == nullptr) {
         SPDLOG_ERROR("ImportTextureRgba32: null texture address for tile {}", tile);
@@ -1505,9 +1504,8 @@ void Interpreter::ImportTextureRgba32(int tile, bool importReplacement) {
 
 void Interpreter::ImportTextureIA4(int tile, bool importReplacement) {
     const RawTexMetadata* metadata = &mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].raw_tex_metadata;
-    const uint8_t* addr =
-        importReplacement ? MaskedReplacementData(metadata)
-                          : mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].addr;
+    const uint8_t* addr = importReplacement ? MaskedReplacementData(metadata)
+                                            : mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].addr;
 
     if (addr == nullptr) {
         SPDLOG_ERROR("ImportTextureIA4: null texture address for tile {}", tile);
@@ -1549,9 +1547,8 @@ void Interpreter::ImportTextureIA4(int tile, bool importReplacement) {
 
 void Interpreter::ImportTextureIA8(int tile, bool importReplacement) {
     const RawTexMetadata* metadata = &mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].raw_tex_metadata;
-    const uint8_t* addr =
-        importReplacement ? MaskedReplacementData(metadata)
-                          : mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].addr;
+    const uint8_t* addr = importReplacement ? MaskedReplacementData(metadata)
+                                            : mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].addr;
 
     if (addr == nullptr) {
         SPDLOG_ERROR("ImportTextureIA8: null texture address for tile {}", tile);
@@ -1590,9 +1587,8 @@ void Interpreter::ImportTextureIA8(int tile, bool importReplacement) {
 
 void Interpreter::ImportTextureIA16(int tile, bool importReplacement) {
     const RawTexMetadata* metadata = &mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].raw_tex_metadata;
-    const uint8_t* addr =
-        importReplacement ? MaskedReplacementData(metadata)
-                          : mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].addr;
+    const uint8_t* addr = importReplacement ? MaskedReplacementData(metadata)
+                                            : mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].addr;
 
     if (addr == nullptr) {
         SPDLOG_ERROR("ImportTextureIA16: null texture address for tile {}", tile);
@@ -1639,9 +1635,8 @@ void Interpreter::ImportTextureIA16(int tile, bool importReplacement) {
 
 void Interpreter::ImportTextureI4(int tile, bool importReplacement) {
     const RawTexMetadata* metadata = &mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].raw_tex_metadata;
-    const uint8_t* addr =
-        importReplacement ? MaskedReplacementData(metadata)
-                          : mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].addr;
+    const uint8_t* addr = importReplacement ? MaskedReplacementData(metadata)
+                                            : mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].addr;
 
     if (addr == nullptr) {
         SPDLOG_ERROR("ImportTextureI4: null texture address for tile {}", tile);
@@ -1690,9 +1685,8 @@ void Interpreter::ImportTextureI4(int tile, bool importReplacement) {
 
 void Interpreter::ImportTextureI8(int tile, bool importReplacement) {
     const RawTexMetadata* metadata = &mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].raw_tex_metadata;
-    const uint8_t* addr =
-        importReplacement ? MaskedReplacementData(metadata)
-                          : mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].addr;
+    const uint8_t* addr = importReplacement ? MaskedReplacementData(metadata)
+                                            : mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].addr;
 
     if (addr == nullptr) {
         SPDLOG_ERROR("ImportTextureI8: null texture address for tile {}", tile);
@@ -1731,9 +1725,8 @@ void Interpreter::ImportTextureCi4(int tile, bool importReplacement) {
     uint32_t fullImageLineSizeBytes =
         mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].full_image_line_size_bytes;
     const RawTexMetadata* metadata = &mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].raw_tex_metadata;
-    const uint8_t* addr =
-        importReplacement ? MaskedReplacementData(metadata)
-                          : mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].addr;
+    const uint8_t* addr = importReplacement ? MaskedReplacementData(metadata)
+                                            : mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].addr;
 
     if (addr == nullptr) {
         SPDLOG_ERROR("ImportTextureCi4: null texture address for tile {}", tile);
@@ -1829,9 +1822,8 @@ void Interpreter::ImportTextureCi4(int tile, bool importReplacement) {
 
 void Interpreter::ImportTextureCi8(int tile, bool importReplacement) {
     const RawTexMetadata* metadata = &mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].raw_tex_metadata;
-    const uint8_t* addr =
-        importReplacement ? MaskedReplacementData(metadata)
-                          : mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].addr;
+    const uint8_t* addr = importReplacement ? MaskedReplacementData(metadata)
+                                            : mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].addr;
 
     if (addr == nullptr) {
         SPDLOG_ERROR("ImportTextureCi8: null texture address for tile {}", tile);
@@ -1914,9 +1906,8 @@ void Interpreter::ImportTextureCi8(int tile, bool importReplacement) {
 
 void Interpreter::ImportTextureImg(int tile, bool importReplacement) {
     const RawTexMetadata* metadata = &mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].raw_tex_metadata;
-    const uint8_t* addr =
-        importReplacement ? MaskedReplacementData(metadata)
-                          : mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].addr;
+    const uint8_t* addr = importReplacement ? MaskedReplacementData(metadata)
+                                            : mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].addr;
 
     if (addr == nullptr) {
         SPDLOG_ERROR("ImportTextureImg: null texture address for tile {}", tile);
@@ -1976,9 +1967,8 @@ bool Interpreter::TileRasterRegion(int tile, RasterRegion& region) const {
 std::shared_ptr<Fast::Texture> Interpreter::VanillaCiSource(int tile, RasterRegion& region) const {
     const auto& tt = mRdp->texture_tile[tile];
     const auto& loaded = mRdp->loaded_texture[tt.tmem_index];
-    if (tt.fmt != G_IM_FMT_CI || (tt.siz != G_IM_SIZ_4b && tt.siz != G_IM_SIZ_8b) || loaded.masked ||
-        loaded.blended || (loaded.tex_flags & TEX_FLAG_LOAD_AS_IMG) != 0 || TilePaletteIsNamed(tile) ||
-        !TileRasterRegion(tile, region)) {
+    if (tt.fmt != G_IM_FMT_CI || (tt.siz != G_IM_SIZ_4b && tt.siz != G_IM_SIZ_8b) || loaded.masked || loaded.blended ||
+        (loaded.tex_flags & TEX_FLAG_LOAD_AS_IMG) != 0 || TilePaletteIsNamed(tile) || !TileRasterRegion(tile, region)) {
         return nullptr;
     }
     Fast::Texture* hd = loaded.raw_tex_metadata.resource.get();
@@ -2088,9 +2078,8 @@ bool Interpreter::UploadVanillaCi(int tile) {
 
 void Interpreter::ImportTextureRaw(int tile, bool importReplacement) {
     const RawTexMetadata* metadata = &mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].raw_tex_metadata;
-    const uint8_t* addr =
-        importReplacement ? MaskedReplacementData(metadata)
-                          : mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].addr;
+    const uint8_t* addr = importReplacement ? MaskedReplacementData(metadata)
+                                            : mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].addr;
 
     if (addr == nullptr) {
         SPDLOG_ERROR("ImportTextureRaw: null texture address for tile {}", tile);
@@ -2537,8 +2526,8 @@ static void BoxDownsampleRows(const uint8_t* src, uint32_t srcW, uint32_t srcH, 
                 }
             } else {
                 for (int c = 0; c < 3; c++) {
-                    uint32_t w = (uint32_t)p00[c] * p00[3] + (uint32_t)p01[c] * p01[3] +
-                                 (uint32_t)p10[c] * p10[3] + (uint32_t)p11[c] * p11[3];
+                    uint32_t w = (uint32_t)p00[c] * p00[3] + (uint32_t)p01[c] * p01[3] + (uint32_t)p10[c] * p10[3] +
+                                 (uint32_t)p11[c] * p11[3];
                     d[c] = (uint8_t)(((uint64_t)w * kRecip[aSum] + (1u << 19)) >> 20);
                 }
             }
@@ -2640,7 +2629,7 @@ void Interpreter::UploadBaseTexture(const uint8_t* rgba32Buf, uint32_t width, ui
     // visible in-game (distant surfaces change color as lower levels are picked).
     const bool mipDebug = Ship::Context::GetRawInstance()->GetConsoleVariables()->GetInteger("gMipDebug", 0) != 0;
     static const uint8_t kMipDebugColors[][3] = {
-        { 255, 0, 0 },   { 0, 255, 0 },   { 0, 128, 255 }, { 255, 255, 0 },
+        { 255, 0, 0 },   { 0, 255, 0 },   { 0, 128, 255 },   { 255, 255, 0 },
         { 255, 0, 255 }, { 0, 255, 255 }, { 255, 255, 255 },
     };
     for (uint32_t level = 1; level < totalLevels && level <= levels->size(); level++) {
@@ -2786,8 +2775,8 @@ void Interpreter::UploadMipChain(uint32_t baseTile) {
                     // RGBA32 tiles store the TMEM-interleaved stride (half of the DRAM stride)
                     strideBytes *= 2;
                 }
-                if (strideBytes > 0 && DecodeTileToRgba32(t.fmt, t.siz, src, strideBytes, width, height,
-                                                          mRdp->palettes, basePalette, mTexUploadBuffer)) {
+                if (strideBytes > 0 && DecodeTileToRgba32(t.fmt, t.siz, src, strideBytes, width, height, mRdp->palettes,
+                                                          basePalette, mTexUploadBuffer)) {
                     levelPixels = mTexUploadBuffer;
                     levelW = width;
                     levelH = height;
@@ -2820,13 +2809,11 @@ void Interpreter::ImportTexture(int i, int tile, bool importReplacement) {
     uint32_t origSizeBytes = mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].orig_size_bytes;
 
     const RawTexMetadata* metadata = &mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].raw_tex_metadata;
-    const uint8_t* origAddr =
-        importReplacement ? MaskedReplacementData(metadata) : mRdp->loaded_texture[tmemIdex].addr;
+    const uint8_t* origAddr = importReplacement ? MaskedReplacementData(metadata) : mRdp->loaded_texture[tmemIdex].addr;
 
     // Only HD (upscaled) textures get auto-generated mipmaps; original low-res
     // N64 textures upload single-level. UploadBaseTexture reads this flag.
     mImportIsHd = metadata->h_byte_scale != 1 || metadata->v_pixel_scale != 1;
-
 
     // Check if this texture address is a registered GPU framebuffer mirror.
     // If so, bind the GPU FB directly — full resolution, no CPU readback needed.
@@ -2862,7 +2849,7 @@ void Interpreter::ImportTexture(int i, int tile, bool importReplacement) {
     if (fmt == G_IM_FMT_CI) {
         if (siz == G_IM_SIZ_4b) {
             // The bank this tile reads, not whichever palette last landed in its slot
-            key = { origAddr, { mRdp->palette_bank_dram_addr[paletteIndex & 15], nullptr }, fmt, siz, paletteIndex,
+            key = { origAddr,     { mRdp->palette_bank_dram_addr[paletteIndex & 15], nullptr }, fmt, siz, paletteIndex,
                     origSizeBytes };
         } else {
             // CI8 uses both palette halves
@@ -3393,10 +3380,9 @@ void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx
                              (mRdp->other_mode_l & (3U << 22)) == ((uint32_t)G_BL_CLR_MEM << 22)) ||
                             ((mRdp->other_mode_l & (3U << 28)) == ((uint32_t)G_BL_CLR_MEM << 28) &&
                              (mRdp->other_mode_l & (3U << 20)) == ((uint32_t)G_BL_CLR_MEM << 20));
-    bool invisible =
-        ((mRdp->other_mode_l & (3 << 24)) == (G_BL_0 << 24) &&
-         (mRdp->other_mode_l & (3 << 20)) == (G_BL_CLR_MEM << 20)) ||
-        colour_is_memory;
+    bool invisible = ((mRdp->other_mode_l & (3 << 24)) == (G_BL_0 << 24) &&
+                      (mRdp->other_mode_l & (3 << 20)) == (G_BL_CLR_MEM << 20)) ||
+                     colour_is_memory;
     bool use_grayscale = mRdp->grayscale;
     bool use_prim_depth = (mRdp->other_mode_l & G_ZS_PRIM) != 0;
 
@@ -3585,8 +3571,10 @@ void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx
                 if (mTextureReplacementDebug && i == 0 && mDebugTintState == 0) {
                     // Debug view: green when texture 0 is a replacement, red when it is the
                     // game's texture (blended-texture states above take precedence).
-                    const auto& res = mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].raw_tex_metadata.resource;
-                    const bool isAlt = res != nullptr && res->GetInitData()->Path.starts_with(Ship::IResource::gAltAssetPrefix);
+                    const auto& res =
+                        mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].raw_tex_metadata.resource;
+                    const bool isAlt =
+                        res != nullptr && res->GetInitData()->Path.starts_with(Ship::IResource::gAltAssetPrefix);
                     mDebugTintState = isAlt ? 2 : 1;
                 }
                 mCurrentMipExtraLevels = 0;
@@ -3610,8 +3598,7 @@ void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx
                         // slot so the blend reproduces the base (no pop-in / no garbage).
                         mRapi->SelectTexture(SHADER_FIRST_REPLACEMENT_TEXTURE + i,
                                              mRenderingState.mTextures[i]->second.texture_id);
-                        mRenderingState.mTextures[SHADER_FIRST_REPLACEMENT_TEXTURE + i] =
-                            mRenderingState.mTextures[i];
+                        mRenderingState.mTextures[SHADER_FIRST_REPLACEMENT_TEXTURE + i] = mRenderingState.mTextures[i];
                     }
                     if (mTextureReplacementDebug) {
                         // Highest-priority state wins across the two tiles (red > green > blue).
@@ -3634,8 +3621,8 @@ void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx
             uint32_t tex_size_bytes;
             uint32_t line_size;
             const auto& loadedTex = mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index];
-            const bool isHd = loadedTex.raw_tex_metadata.h_byte_scale != 1 ||
-                              loadedTex.raw_tex_metadata.v_pixel_scale != 1;
+            const bool isHd =
+                loadedTex.raw_tex_metadata.h_byte_scale != 1 || loadedTex.raw_tex_metadata.v_pixel_scale != 1;
             // Raw replacement data is uploaded whole, at its own resolution, and the
             // tile origin and wrap modes apply to it as they do on hardware: size it in
             // N64 texels of the load, never in replacement bytes or the tile window.
@@ -6781,15 +6768,18 @@ bool gfx_set_tile_scroll_interp_handler_rdp(F3DGfx** cmd0) {
 
     float uls, ult, span_s, span_t, delta_uls, delta_ult;
 
-    ++(*cmd0); cmd = *cmd0;
+    ++(*cmd0);
+    cmd = *cmd0;
     memcpy(&uls, &cmd->words.w0, sizeof(float));
     memcpy(&ult, &cmd->words.w1, sizeof(float));
 
-    ++(*cmd0); cmd = *cmd0;
+    ++(*cmd0);
+    cmd = *cmd0;
     memcpy(&span_s, &cmd->words.w0, sizeof(float));
     memcpy(&span_t, &cmd->words.w1, sizeof(float));
 
-    ++(*cmd0); cmd = *cmd0;
+    ++(*cmd0);
+    cmd = *cmd0;
     memcpy(&delta_uls, &cmd->words.w0, sizeof(float));
     memcpy(&delta_ult, &cmd->words.w1, sizeof(float));
 
@@ -7129,34 +7119,34 @@ static constexpr UcodeHandler rdpHandlers = {
       { "G_SETTILESIZE_INTERP", gfx_set_tile_size_interp_handler_rdp } },                     // G_SETTILESIZE_INTERP
     { RDP_G_SETTILESIZE_LERP, { "G_SETTILESIZE_LERP", gfx_set_tile_size_lerp_handler_rdp } }, // G_SETTILESIZE_LERP
     { RDP_G_SETTILESCROLL_INTERP,
-      { "G_SETTILESCROLL_INTERP", gfx_set_tile_scroll_interp_handler_rdp } }, // G_SETTILESCROLL_INTERP
-    { RDP_G_TEXRECT, { "G_TEXRECT", gfx_tex_rect_and_flip_handler_rdp } },                    // G_TEXRECT (-28)
-    { RDP_G_TEXRECTFLIP, { "G_TEXRECTFLIP", gfx_tex_rect_and_flip_handler_rdp } },            // G_TEXRECTFLIP (-27)
-    { RDP_G_RDPLOADSYNC, { "mRdpLOADSYNC", gfx_stubbed_command_handler } },                   // mRdpLOADSYNC (-26)
-    { RDP_G_RDPPIPESYNC, { "mRdpPIPESYNC", gfx_stubbed_command_handler } },                   // mRdpPIPESYNC (-25)
-    { RDP_G_RDPTILESYNC, { "mRdpTILESYNC", gfx_stubbed_command_handler } },                   // mRdpPIPESYNC (-24)
-    { RDP_G_RDPFULLSYNC, { "mRdpFULLSYNC", gfx_stubbed_command_handler } },                   // mRdpFULLSYNC (-23)
-    { RDP_G_SETKEYGB, { "G_SETKEYGB", gfx_set_key_gb_handler_rdp } },                         // G_SETKEYGB (-22)
-    { RDP_G_SETKEYR, { "G_SETKEYR", gfx_set_key_r_handler_rdp } },                            // G_SETKEYR (-21)
-    { RDP_G_SETCONVERT, { "G_SETCONVERT", gfx_set_convert_handler_rdp } },                    // G_SETCONVERT (-20)
-    { RDP_G_SETSCISSOR, { "G_SETSCISSOR", gfx_SetScissor_handler_rdp } },                     // G_SETSCISSOR (-19)
-    { RDP_G_SETPRIMDEPTH, { "G_SETPRIMDEPTH", gfx_set_prim_depth_handler_rdp } },             // G_SETPRIMDEPTH (-18)
-    { RDP_G_RDPSETOTHERMODE, { "mRdpSETOTHERMODE", gfx_rdp_set_other_mode_rdp } },            // mRdpSETOTHERMODE (-17)
-    { RDP_G_LOADTLUT, { "G_LOADTLUT", gfx_load_tlut_handler_rdp } },                          // G_LOADTLUT (-16)
-    { RDP_G_SETTILESIZE, { "G_SETTILESIZE", gfx_set_tile_size_handler_rdp } },                // G_SETTILESIZE (-14)
-    { RDP_G_LOADBLOCK, { "G_LOADBLOCK", gfx_load_block_handler_rdp } },                       // G_LOADBLOCK (-13)
-    { RDP_G_LOADTILE, { "G_LOADTILE", gfx_load_tile_handler_rdp } },                          // G_LOADTILE (-12)
-    { RDP_G_SETTILE, { "G_SETTILE", gfx_set_tile_handler_rdp } },                             // G_SETTILE (-11)
-    { RDP_G_FILLRECT, { "G_FILLRECT", gfx_fill_rect_handler_rdp } },                          // G_FILLRECT (-10)
-    { RDP_G_SETFILLCOLOR, { "G_SETFILLCOLOR", gfx_set_fill_color_handler_rdp } },             // G_SETFILLCOLOR (-9)
-    { RDP_G_SETFOGCOLOR, { "G_SETFOGCOLOR", gfx_set_fog_color_handler_rdp } },                // G_SETFOGCOLOR (-8)
-    { RDP_G_SETBLENDCOLOR, { "G_SETBLENDCOLOR", gfx_set_blend_color_handler_rdp } },          // G_SETBLENDCOLOR (-7)
-    { RDP_G_SETPRIMCOLOR, { "G_SETPRIMCOLOR", gfx_set_prim_color_handler_rdp } },             // G_SETPRIMCOLOR (-6)
-    { RDP_G_SETENVCOLOR, { "G_SETENVCOLOR", gfx_set_env_color_handler_rdp } },                // G_SETENVCOLOR (-5)
-    { RDP_G_SETCOMBINE, { "G_SETCOMBINE", gfx_set_combine_handler_rdp } },                    // G_SETCOMBINE (-4)
-    { RDP_G_SETTIMG, { "G_SETTIMG", gfx_set_timg_handler_rdp } },                             // G_SETTIMG (-3)
-    { RDP_G_SETZIMG, { "G_SETZIMG", gfx_set_z_img_handler_rdp } },                            // G_SETZIMG (-2)
-    { RDP_G_SETCIMG, { "G_SETCIMG", gfx_set_c_img_handler_rdp } },                            // G_SETCIMG (-1)
+      { "G_SETTILESCROLL_INTERP", gfx_set_tile_scroll_interp_handler_rdp } },        // G_SETTILESCROLL_INTERP
+    { RDP_G_TEXRECT, { "G_TEXRECT", gfx_tex_rect_and_flip_handler_rdp } },           // G_TEXRECT (-28)
+    { RDP_G_TEXRECTFLIP, { "G_TEXRECTFLIP", gfx_tex_rect_and_flip_handler_rdp } },   // G_TEXRECTFLIP (-27)
+    { RDP_G_RDPLOADSYNC, { "mRdpLOADSYNC", gfx_stubbed_command_handler } },          // mRdpLOADSYNC (-26)
+    { RDP_G_RDPPIPESYNC, { "mRdpPIPESYNC", gfx_stubbed_command_handler } },          // mRdpPIPESYNC (-25)
+    { RDP_G_RDPTILESYNC, { "mRdpTILESYNC", gfx_stubbed_command_handler } },          // mRdpPIPESYNC (-24)
+    { RDP_G_RDPFULLSYNC, { "mRdpFULLSYNC", gfx_stubbed_command_handler } },          // mRdpFULLSYNC (-23)
+    { RDP_G_SETKEYGB, { "G_SETKEYGB", gfx_set_key_gb_handler_rdp } },                // G_SETKEYGB (-22)
+    { RDP_G_SETKEYR, { "G_SETKEYR", gfx_set_key_r_handler_rdp } },                   // G_SETKEYR (-21)
+    { RDP_G_SETCONVERT, { "G_SETCONVERT", gfx_set_convert_handler_rdp } },           // G_SETCONVERT (-20)
+    { RDP_G_SETSCISSOR, { "G_SETSCISSOR", gfx_SetScissor_handler_rdp } },            // G_SETSCISSOR (-19)
+    { RDP_G_SETPRIMDEPTH, { "G_SETPRIMDEPTH", gfx_set_prim_depth_handler_rdp } },    // G_SETPRIMDEPTH (-18)
+    { RDP_G_RDPSETOTHERMODE, { "mRdpSETOTHERMODE", gfx_rdp_set_other_mode_rdp } },   // mRdpSETOTHERMODE (-17)
+    { RDP_G_LOADTLUT, { "G_LOADTLUT", gfx_load_tlut_handler_rdp } },                 // G_LOADTLUT (-16)
+    { RDP_G_SETTILESIZE, { "G_SETTILESIZE", gfx_set_tile_size_handler_rdp } },       // G_SETTILESIZE (-14)
+    { RDP_G_LOADBLOCK, { "G_LOADBLOCK", gfx_load_block_handler_rdp } },              // G_LOADBLOCK (-13)
+    { RDP_G_LOADTILE, { "G_LOADTILE", gfx_load_tile_handler_rdp } },                 // G_LOADTILE (-12)
+    { RDP_G_SETTILE, { "G_SETTILE", gfx_set_tile_handler_rdp } },                    // G_SETTILE (-11)
+    { RDP_G_FILLRECT, { "G_FILLRECT", gfx_fill_rect_handler_rdp } },                 // G_FILLRECT (-10)
+    { RDP_G_SETFILLCOLOR, { "G_SETFILLCOLOR", gfx_set_fill_color_handler_rdp } },    // G_SETFILLCOLOR (-9)
+    { RDP_G_SETFOGCOLOR, { "G_SETFOGCOLOR", gfx_set_fog_color_handler_rdp } },       // G_SETFOGCOLOR (-8)
+    { RDP_G_SETBLENDCOLOR, { "G_SETBLENDCOLOR", gfx_set_blend_color_handler_rdp } }, // G_SETBLENDCOLOR (-7)
+    { RDP_G_SETPRIMCOLOR, { "G_SETPRIMCOLOR", gfx_set_prim_color_handler_rdp } },    // G_SETPRIMCOLOR (-6)
+    { RDP_G_SETENVCOLOR, { "G_SETENVCOLOR", gfx_set_env_color_handler_rdp } },       // G_SETENVCOLOR (-5)
+    { RDP_G_SETCOMBINE, { "G_SETCOMBINE", gfx_set_combine_handler_rdp } },           // G_SETCOMBINE (-4)
+    { RDP_G_SETTIMG, { "G_SETTIMG", gfx_set_timg_handler_rdp } },                    // G_SETTIMG (-3)
+    { RDP_G_SETZIMG, { "G_SETZIMG", gfx_set_z_img_handler_rdp } },                   // G_SETZIMG (-2)
+    { RDP_G_SETCIMG, { "G_SETCIMG", gfx_set_c_img_handler_rdp } },                   // G_SETCIMG (-1)
 };
 
 static constexpr UcodeHandler otrHandlers = {
@@ -7647,8 +7637,8 @@ void Interpreter::Run(Gfx* commands, const std::unordered_map<Mtx*, MtxF>& mtx_r
 
     // Cache the RGB-dither toggle once per frame; the per-draw uniform block reads
     // mRgbDitherEnabled (hot path, so no CVar lookup there).
-    mRgbDitherEnabled =
-        Ship::Context::GetRawInstance()->GetConsoleVariables()->GetInteger("gEnhancements.Graphics.DitherNoise", 0) != 0;
+    mRgbDitherEnabled = Ship::Context::GetRawInstance()->GetConsoleVariables()->GetInteger(
+                            "gEnhancements.Graphics.DitherNoise", 0) != 0;
 
     // Per-frame budget for new HD-replacement texture uploads (0 = unlimited / original
     // behavior). Spreads big 4K uploads across frames; the base renders until ready.

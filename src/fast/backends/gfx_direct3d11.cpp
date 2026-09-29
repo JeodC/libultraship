@@ -408,8 +408,8 @@ struct ShaderProgram* GfxRenderingAPIDX11::CreateAndLoadNewShader(uint64_t shade
     char* buf;
     size_t len, numFloats;
 
-    auto shader = gfx_direct3d_common_build_shader(numFloats, cc_features, false,
-                                                   mCurrentFilterMode == FILTER_THREE_POINT);
+    auto shader =
+        gfx_direct3d_common_build_shader(numFloats, cc_features, false, mCurrentFilterMode == FILTER_THREE_POINT);
 
     buf = shader.data();
     len = shader.size();
@@ -1386,7 +1386,6 @@ GfxRenderingAPIDX11::GetPixelDepth(int fb_id, const std::set<std::pair<float, fl
 ImTextureID GfxRenderingAPIDX11::GetTextureById(int id) {
     return mTextures[id].resource_view.Get();
 }
-
 
 #define RAND_NOISE "((random(float3(floor(screenSpace.xy * noise_scale), noise_frame)) + 1.0) / 2.0)"
 

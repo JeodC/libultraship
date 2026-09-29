@@ -217,9 +217,8 @@ static void ErrorHandler(int sig, siginfo_t* sigInfo, void* data) {
     for (size_t i = firstFrame; i < size; i++) {
         Dl_info info;
         int gotAddress = dladdr(arr[i], &info);
-        std::string functionName = symbols != nullptr && symbols[i] != nullptr
-                                       ? std::string(symbols[i])
-                                       : StringHelper::Sprintf("%p", arr[i]);
+        std::string functionName =
+            symbols != nullptr && symbols[i] != nullptr ? std::string(symbols[i]) : StringHelper::Sprintf("%p", arr[i]);
 
         if (gotAddress != 0 && info.dli_sname != nullptr) {
             FILE* pipe;
