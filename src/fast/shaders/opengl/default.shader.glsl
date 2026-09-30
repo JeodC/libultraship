@@ -90,8 +90,8 @@
 
     // Integer hash for the G_CD_NOISE dither: robust per-pixel + per-frame value 0..7
     // (a sin-based hash aliases to near-constant on some GPUs, washing the noise out).
-    int ditherNoise(ivec2 p, int frame) {
-        uint h = uint(p.x) * 1597334677u ^ uint(p.y) * 3812015801u ^ uint(frame) * 2654435761u;
+    int ditherNoise(highp ivec2 p, highp int frame) {
+        highp uint h = uint(p.x) * 1597334677u ^ uint(p.y) * 3812015801u ^ uint(frame) * 2654435761u;
         h ^= h >> 16u; h *= 2246822519u;
         h ^= h >> 13u; h *= 3266489917u;
         h ^= h >> 16u;
