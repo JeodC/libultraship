@@ -864,13 +864,7 @@ void Interpreter::PrefetchReplacementGroup(const std::string& group) {
     if (!rm->IsAltAssetsEnabled()) {
         return;
     }
-    if (!mAltFilesListed) {
-        mAltFilesListed = true;
-        if (auto files = rm->GetArchiveManager()->ListFiles(Ship::IResource::gAltAssetPrefix + "*")) {
-            mAltFiles = std::move(*files);
-            std::sort(mAltFiles.begin(), mAltFiles.end());
-        }
-    }
+    ListAltFiles();
     const std::string prefix = Ship::IResource::gAltAssetPrefix + group;
     size_t queued = 0;
     for (auto it = std::lower_bound(mAltFiles.begin(), mAltFiles.end(), prefix);
@@ -903,6 +897,29 @@ void Interpreter::PrefetchReplacementGroup(const std::string& group) {
             break;
         }
     }
+}
+
+void Interpreter::ListAltFiles() {
+    if (mAltFilesListed) {
+        return;
+    }
+    mAltFilesListed = true;
+    auto rm = Ship::Context::GetRawInstance()->GetResourceManager();
+    if (auto files = rm->GetArchiveManager()->ListFiles(Ship::IResource::gAltAssetPrefix + "*")) {
+        mAltFiles = std::move(*files);
+        std::sort(mAltFiles.begin(), mAltFiles.end());
+    }
+}
+
+std::shared_ptr<Ship::IResource> Interpreter::LoadPaletteStandIn(const std::string& name) {
+    ListAltFiles();
+    const std::string prefix = Ship::IResource::gAltAssetPrefix + name + "@";
+    auto it = std::lower_bound(mAltFiles.begin(), mAltFiles.end(), prefix);
+    if (it == mAltFiles.end() || it->compare(0, prefix.size(), prefix) != 0) {
+        return nullptr;
+    }
+    auto res = Ship::Context::GetRawInstance()->GetResourceManager()->LoadResource(*it, /*loadExact=*/true);
+    return res != nullptr && ReplacementFits(res, *it) ? res : nullptr;
 }
 
 // Toggling alt assets invalidates everything AcquireDrawTexture remembered, including
@@ -986,6 +1003,9 @@ std::shared_ptr<Ship::IResource> Interpreter::AcquireDrawTexture(const char* nam
         if (auto hd = rm->LoadResource(altName, /*loadExact=*/true); hd && ReplacementFits(hd, altName)) {
             return settled(hd);
         }
+        if (auto standIn = LoadPaletteStandIn(nameStr)) {
+            return settled(standIn);
+        }
         mAltMissing.insert(nameStr);
         return settled(rm->LoadResource(name, /*loadExact=*/true));
     }
@@ -999,27 +1019,19 @@ std::shared_ptr<Ship::IResource> Interpreter::AcquireDrawTexture(const char* nam
                 return settled(r);
             }
         }
+        if (auto standIn = LoadPaletteStandIn(nameStr)) {
+            return settled(standIn);
+        }
         return settled(rm->LoadResource(name, /*loadExact=*/true));
     }
 
     // Async path: decode the HD ("alt/name") on the thread pool while vanilla renders.
     auto& fut = mTexFutures[nameStr];
     if (!fut.valid()) {
-        mTexSubmitted[name] = std::chrono::steady_clock::now();
         fut = rm->LoadResourceAsync(altName, /*loadExact=*/true, BS::pr::lowest);
     }
     if (fut.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
         if (auto res = fut.get()) {
-            auto sub = mTexSubmitted.find(name);
-            if (sub != mTexSubmitted.end()) {
-                const auto waited = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                        std::chrono::steady_clock::now() - sub->second)
-                                        .count();
-                if (waited >= 2000) {
-                    SPDLOG_INFO("hd ready {} after {} ms", name, waited);
-                }
-                mTexSubmitted.erase(sub);
-            }
             // HD decoded. Its first draw triggers the (large) GPU upload — budget that swap-in
             // so a whole level's HD textures don't all upload the same frame. Over budget →
             // keep showing vanilla and try again next frame (so this one is not remembered).
@@ -1037,6 +1049,9 @@ std::shared_ptr<Ship::IResource> Interpreter::AcquireDrawTexture(const char* nam
         }
         // No HD for this texture — settle on vanilla and stop re-checking.
         mTexSwappedIn.insert(nameStr);
+        if (auto standIn = LoadPaletteStandIn(nameStr)) {
+            return settled(standIn);
+        }
         mAltMissing.insert(nameStr);
         return settled(rm->LoadResource(name, /*loadExact=*/true));
     }
@@ -1150,20 +1165,28 @@ std::shared_ptr<Fast::Texture> Interpreter::ResolvePaletteVariant(const RawTexMe
     return LoadPaletteVariant(metadata, tlut);
 }
 
+std::string Interpreter::PaletteVariantPath(const RawTexMetadata* metadata, const std::string& tlut) {
+    const size_t slash = tlut.find_last_of('/');
+    return Ship::IResource::gAltAssetPrefix + std::string(GetBaseTexturePath(metadata->resource->GetInitData()->Path)) +
+           "@" + (slash == std::string::npos ? tlut : tlut.substr(slash + 1));
+}
+
+bool Interpreter::IsPaletteStandIn(const RawTexMetadata* metadata) const {
+    return HasHdReplacement(metadata) && metadata->resource->GetInitData()->Path.find('@') != std::string::npos;
+}
+
+bool Interpreter::HasPaletteVariant(const RawTexMetadata* metadata, const std::string& tlut) const {
+    return !tlut.empty() &&
+           std::binary_search(mAltFiles.begin(), mAltFiles.end(), PaletteVariantPath(metadata, tlut)) &&
+           LoadPaletteVariant(metadata, tlut) != nullptr;
+}
+
 // "alt/<raster>@<palette basename>", when the pack has it at the raster's own size.
 std::shared_ptr<Fast::Texture> Interpreter::LoadPaletteVariant(const RawTexMetadata* metadata,
-                                                               const std::string& tlut) {
-    const size_t slash = tlut.find_last_of('/');
-    const std::string variantPath =
-        metadata->resource->GetInitData()->Path + "@" + (slash == std::string::npos ? tlut : tlut.substr(slash + 1));
-    const auto t0 = std::chrono::steady_clock::now();
+                                                               const std::string& tlut) const {
+    const std::string variantPath = PaletteVariantPath(metadata, tlut);
     auto variant = std::static_pointer_cast<Fast::Texture>(
         Ship::Context::GetRawInstance()->GetResourceManager()->LoadResource(variantPath, /*loadExact=*/true));
-    const auto ms =
-        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
-    if (ms >= 50) {
-        SPDLOG_INFO("variant load {} took {} ms", variantPath, ms);
-    }
     if (variant == nullptr || variant->Width != metadata->width || variant->Height != metadata->height ||
         variant->Type != metadata->type || variant->ImageDataSize != metadata->resource->ImageDataSize) {
         return nullptr;
@@ -1185,6 +1208,10 @@ const uint8_t* Interpreter::BlendPaletteVariants(const RawTexMetadata* metadata,
     }
     const auto from = LoadPaletteVariant(metadata, blend.from);
     const auto to = LoadPaletteVariant(metadata, blend.to);
+    // A stand-in's art belongs to one palette, so it can't fill in for a missing end.
+    if (IsPaletteStandIn(metadata) && (from == nullptr || to == nullptr)) {
+        return nullptr;
+    }
     const uint8_t* a = from != nullptr ? from->ImageData : metadata->resource->ImageData;
     const uint8_t* b = to != nullptr ? to->ImageData : metadata->resource->ImageData;
     if (a == b) {
@@ -1240,10 +1267,15 @@ bool Interpreter::TilePaletteIsNamed(int tile) const {
         return true;
     }
     const int bank = tt.siz == G_IM_SIZ_4b ? (tt.palette & 15) : 0;
+    const RawTexMetadata* metadata = &mRdp->loaded_texture[tt.tmem_index].raw_tex_metadata;
+    if (IsPaletteStandIn(metadata)) {
+        const PaletteBlend& blend = mTlutBlend[bank];
+        return blend.to.empty() ? HasPaletteVariant(metadata, mTlutPath[bank])
+                                : HasPaletteVariant(metadata, blend.from) && HasPaletteVariant(metadata, blend.to);
+    }
     // A lerp between two named palettes counts as named for HD art (mixed from each
     // end's variant) and not for N64 texels (drawn through the lerp itself).
-    return !mTlutPath[bank].empty() ||
-           (!mTlutBlend[bank].to.empty() && HasHdReplacement(&mRdp->loaded_texture[tt.tmem_index].raw_tex_metadata));
+    return !mTlutPath[bank].empty() || (!mTlutBlend[bank].to.empty() && HasHdReplacement(metadata));
 }
 
 std::string_view Interpreter::GetBaseTexturePath(std::string_view path) {
@@ -2107,15 +2139,21 @@ void Interpreter::ImportTextureRaw(int tile, bool importReplacement) {
     // stands in for every named palette. A palette built at run time (sprite shading,
     // status tints) has no name, so the tile keeps its N64 texels through it, unless the
     // game says which two named palettes it lerps between.
+    const uint8_t* image = nullptr;
     if (!importReplacement) {
         if (auto variant = ResolvePaletteVariant(metadata, tile)) {
-            addr = variant->ImageData;
+            image = variant->ImageData;
             resource = variant;
         } else if (const uint8_t* mixed = BlendPaletteVariants(metadata, tile)) {
-            addr = mixed;
+            image = mixed;
         } else if (!TilePaletteIsNamed(tile) && UploadVanillaCi(tile)) {
             return;
         }
+    }
+    // Either has the raster's layout, so a band loaded partway down it reads from the same offset.
+    if (image != nullptr) {
+        const uint8_t* start = metadata->resource->ImageData;
+        addr = image + (addr >= start && addr < start + metadata->resource->ImageDataSize ? addr - start : 0);
     }
 
     uint32_t numLoadedBytes = mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].size_bytes;
@@ -2159,9 +2197,10 @@ void Interpreter::ImportTextureRaw(int tile, bool importReplacement) {
     // The load starts at addr and steps a full line per row. A tile that reads past the
     // last row of the image must stop at the end of the resource.
     uint32_t packedBytes = safeLoadedBytes;
-    if (addr >= resource->ImageData && addr < resource->ImageData + resourceImageSizeBytes && safeLineSizeBytes > 0 &&
+    const uint8_t* imageStart = image != nullptr ? image : resource->ImageData;
+    if (addr >= imageStart && addr < imageStart + resourceImageSizeBytes && safeLineSizeBytes > 0 &&
         safeFullImageLineSizeBytes >= safeLineSizeBytes) {
-        const size_t avail = resource->ImageData + resourceImageSizeBytes - addr;
+        const size_t avail = imageStart + resourceImageSizeBytes - addr;
         uint32_t rows = safeLoadedBytes / safeLineSizeBytes;
         while (rows > 0 && (size_t)(rows - 1) * safeFullImageLineSizeBytes + safeLineSizeBytes > avail) {
             rows--;

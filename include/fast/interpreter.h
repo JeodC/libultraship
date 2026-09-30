@@ -870,7 +870,6 @@ class Interpreter {
     // finishes ("replaced between frames"), so the render thread never blocks on the decode.
     bool mAsyncTextureLoad = false;
     std::unordered_map<std::string, std::shared_future<std::shared_ptr<Ship::IResource>>> mTexFutures;
-    std::unordered_map<std::string, std::chrono::steady_clock::time_point> mTexSubmitted; // for the ready-time log
     // Textures whose HD version has already been swapped in (uploaded once, now cache-resident);
     // they bypass the per-frame swap budget so they never flicker back to vanilla.
     std::unordered_set<std::string> mTexSwappedIn;
@@ -879,11 +878,16 @@ class Interpreter {
     std::function<std::string(const std::string&)> mReplacementGroupOf;
     std::vector<std::string> mAltFiles; // every replacement in the archives, sorted
     bool mAltFilesListed = false;
+    void ListAltFiles();
     // Resource path of the TLUT in each CI4 bank (CI8 uses bank 0), empty when it was
     // loaded from a raw pointer. Names the "alt/<raster>@<palette>" replacement variant.
     std::string mTlutPath[16];
     std::shared_ptr<Fast::Texture> ResolvePaletteVariant(const RawTexMetadata* metadata, int tile);
-    std::shared_ptr<Fast::Texture> LoadPaletteVariant(const RawTexMetadata* metadata, const std::string& tlut);
+    std::shared_ptr<Fast::Texture> LoadPaletteVariant(const RawTexMetadata* metadata, const std::string& tlut) const;
+    static std::string PaletteVariantPath(const RawTexMetadata* metadata, const std::string& tlut);
+    std::shared_ptr<Ship::IResource> LoadPaletteStandIn(const std::string& name);
+    bool IsPaletteStandIn(const RawTexMetadata* metadata) const;
+    bool HasPaletteVariant(const RawTexMetadata* metadata, const std::string& tlut) const;
     bool TilePaletteIsNamed(int tile) const;
     // What the game says a palette it built at run time is (gDPPaletteBlend, gDPPaletteMask),
     // by the address it lives at, for the frame it said so. A bank keeps a copy alongside
