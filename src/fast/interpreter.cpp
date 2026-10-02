@@ -970,38 +970,41 @@ bool Interpreter::ReplacementFits(const std::shared_ptr<Ship::IResource>& res, c
     return false;
 }
 
-// Safe from any thread; the render thread starts it next frame.
+// Safe from any thread; the render thread starts it next frame. A group is every file in
+// one folder (not subfolders) that starts with the prefix.
 void Interpreter::PrefetchReplacementGroup(const std::string& group) {
-    if (group.empty()) {
-        return;
-    }
     std::lock_guard<std::mutex> lock(mPrefetchQueueMutex);
-    mPrefetchQueue.push_back(group);
+    mPrefetchQueue.push_back({ group, true });
 }
 
-// Decode every replacement under a path prefix on the thread pool before it is drawn.
-// Without this the first draw stalls on the load.
-void Interpreter::PrefetchGroupNow(const std::string& group) {
+void Interpreter::PrefetchReplacement(const std::string& name) {
+    std::lock_guard<std::mutex> lock(mPrefetchQueueMutex);
+    mPrefetchQueue.push_back({ name, false });
+}
+
+// Decode every replacement under a path prefix, or one by name, on the thread pool before
+// it is drawn. Without this the first draw stalls on the load.
+void Interpreter::PrefetchNow(const PrefetchRequest& request) {
     SyncAltAssetState();
-    if (group.empty() || mTexPrefetched.contains(group) || mHdResidentBytes >= HdBudgetBytes() / 2) {
-        return;
-    }
     auto rm = Ship::Context::GetRawInstance()->GetResourceManager();
-    if (!rm->IsAltAssetsEnabled()) {
+    if (request.name.empty() || !rm->IsAltAssetsEnabled() ||
+        (request.group && !mTexPrefetched.insert(request.name).second)) {
         return;
     }
-    mTexPrefetched.insert(group);
     ListAltFiles();
-    const std::string prefix = Ship::IResource::gAltAssetPrefix + group;
+    const std::string prefix = Ship::IResource::gAltAssetPrefix + request.name;
     const bool mips = mAutoMipmapsEnabled;
-    size_t queued = 0;
     for (auto it = std::lower_bound(mAltFiles.begin(), mAltFiles.end(), prefix);
-         it != mAltFiles.end() && it->compare(0, prefix.size(), prefix) == 0 && queued < 1024; ++it) {
+         it != mAltFiles.end() && (request.group ? it->compare(0, prefix.size(), prefix) == 0 : *it == prefix);
+         ++it) {
         // Palette variants decode when their palette is first drawn
-        if (it->find('@') != std::string::npos || mPrefetches.contains(*it)) {
+        if (it->find('/', prefix.size()) != std::string::npos || it->find('@') != std::string::npos ||
+            mPrefetches.contains(*it) || rm->GetCachedResource(*it, /*loadExact=*/true) != nullptr) {
             continue;
         }
-        auto decode = [rm, file = *it, mips]() -> std::shared_ptr<Ship::IResource> {
+        auto started = std::make_shared<std::atomic<bool>>(false);
+        auto decode = [rm, file = *it, mips, started]() -> std::shared_ptr<Ship::IResource> {
+            started->store(true, std::memory_order_release);
             auto res = rm->LoadResourceProcess(file, /*loadExact=*/true);
             auto tex = std::dynamic_pointer_cast<Fast::Texture>(res);
             if (mips && tex != nullptr && tex->Type == Fast::TextureType::RGBA32bpp && tex->ImageData != nullptr &&
@@ -1011,8 +1014,8 @@ void Interpreter::PrefetchGroupNow(const std::string& group) {
             }
             return res;
         };
-        mPrefetches[*it] = { rm->GetThreadPool()->submit_task(decode, BS::pr::lowest).share(), mHdFrame };
-        queued++;
+        mPrefetches[*it] = { rm->GetThreadPool()->submit_task(decode, BS::pr::lowest).share(), std::move(started),
+                             mHdFrame };
     }
 }
 
@@ -1111,7 +1114,7 @@ std::shared_ptr<Ship::IResource> Interpreter::AcquireDrawTexture(const char* nam
     const std::string altName = Ship::IResource::gAltAssetPrefix + nameStr;
 
     if (mReplacementGroupOf) {
-        PrefetchGroupNow(mReplacementGroupOf(nameStr));
+        PrefetchNow({ mReplacementGroupOf(nameStr), true });
     }
 
     // Check the archive listing first, so textures the pack doesn't cover skip a load.
@@ -1128,11 +1131,11 @@ std::shared_ptr<Ship::IResource> Interpreter::AcquireDrawTexture(const char* nam
     return settled(rm->LoadResource(name, /*loadExact=*/true));
 }
 
-// Use a finished prefetch; a queued one sits behind the rest at lowest priority, so load it
-// here instead of waiting.
+// Wait on a prefetch a worker already started; a queued one sits behind the rest at lowest
+// priority, so load it here instead.
 std::shared_ptr<Ship::IResource> Interpreter::LoadReplacement(const std::string& path) {
     if (auto it = mPrefetches.find(path);
-        it != mPrefetches.end() && it->second.result.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+        it != mPrefetches.end() && it->second.started->load(std::memory_order_acquire)) {
         return it->second.result.get();
     }
     return Ship::Context::GetRawInstance()->GetResourceManager()->LoadResource(path, /*loadExact=*/true);
@@ -7712,12 +7715,12 @@ void Interpreter::Run(Gfx* commands, const std::unordered_map<Mtx*, MtxF>& mtx_r
 
     // Start queued prefetches, then trim decoded HD textures to budget before drawing.
     mHdFrame++;
-    std::vector<std::string> prefetchGroups;
+    std::vector<PrefetchRequest> prefetchRequests;
     std::unique_lock<std::mutex> prefetchLock(mPrefetchQueueMutex);
-    prefetchGroups.swap(mPrefetchQueue);
+    prefetchRequests.swap(mPrefetchQueue);
     prefetchLock.unlock();
-    for (const std::string& group : prefetchGroups) {
-        PrefetchGroupNow(group);
+    for (const PrefetchRequest& request : prefetchRequests) {
+        PrefetchNow(request);
     }
     HdEvictToBudget();
 

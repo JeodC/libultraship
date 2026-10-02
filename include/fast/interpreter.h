@@ -9,6 +9,7 @@
 #include <vector>
 #include <stack>
 #include <array>
+#include <atomic>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -849,14 +850,19 @@ class Interpreter {
     // HD textures decoding ahead of their first draw, by path, and when they were asked for
     struct Prefetch {
         std::shared_future<std::shared_ptr<Ship::IResource>> result;
+        std::shared_ptr<std::atomic<bool>> started; // a worker has picked it up
         uint64_t frame;
     };
     std::unordered_map<std::string, Prefetch> mPrefetches;
     std::unordered_set<std::string> mTexPrefetched; // prefix groups already queued
-    // Groups asked for from other threads, started on the render thread's next frame
+    // Asked for from any thread, started on the render thread's next frame
+    struct PrefetchRequest {
+        std::string name;
+        bool group; // every replacement under the prefix, not only the one named
+    };
     std::mutex mPrefetchQueueMutex;
-    std::vector<std::string> mPrefetchQueue;
-    void PrefetchGroupNow(const std::string& group);
+    std::vector<PrefetchRequest> mPrefetchQueue;
+    void PrefetchNow(const PrefetchRequest& request);
     std::shared_ptr<Ship::IResource> LoadReplacement(const std::string& path);
 
     // Decoded HD textures in memory and when each was last drawn (see HdEvictToBudget)
@@ -935,6 +941,7 @@ class Interpreter {
     std::shared_ptr<Ship::IResource> AcquireDrawTexture(const char* name);
     bool ReplacementFits(const std::shared_ptr<Ship::IResource>& res, const std::string& name);
     void PrefetchReplacementGroup(const std::string& group);
+    void PrefetchReplacement(const std::string& name);
     void SetReplacementGroupResolver(std::function<std::string(const std::string&)> groupOf);
     void SyncAltAssetState();
 };
