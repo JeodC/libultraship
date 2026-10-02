@@ -661,6 +661,14 @@ void Interpreter::SetAutoMipmapsEnabled(bool enabled) {
     TextureCacheClear();
 }
 
+void Interpreter::SetMipmapsEnabled(bool enabled) {
+    if (mMipmapsEnabled == enabled) {
+        return;
+    }
+    mMipmapsEnabled = enabled;
+    TextureCacheClear(); // as above
+}
+
 void Interpreter::SetResolvedResourceCacheEnabled(bool enabled) {
     mResolvedResourceCacheEnabled = enabled;
     if (!enabled) {
@@ -993,7 +1001,7 @@ void Interpreter::PrefetchNow(const PrefetchRequest& request) {
     }
     ListAltFiles();
     const std::string prefix = Ship::IResource::gAltAssetPrefix + request.name;
-    const bool mips = mAutoMipmapsEnabled;
+    const bool mips = AutoMipmaps();
     for (auto it = std::lower_bound(mAltFiles.begin(), mAltFiles.end(), prefix);
          it != mAltFiles.end() && (request.group ? it->compare(0, prefix.size(), prefix) == 0 : *it == prefix);
          ++it) {
@@ -2365,7 +2373,7 @@ static uint32_t TileHeightPx(const RDP* rdp, uint32_t tile) {
 uint8_t Interpreter::DetectMipChain(uint32_t baseTile) const {
     // G_TL_LOD lives in the HIGH othermode word (G_MDSFT_TEXTLOD == 16, set via
     // G_SETOTHERMODE_H). Reading other_mode_l here would test a blender mux bit.
-    if ((mRdp->other_mode_h & G_TL_LOD) == 0) {
+    if (!mMipmapsEnabled || (mRdp->other_mode_h & G_TL_LOD) == 0) {
         return 0;
     }
     if ((mRdp->other_mode_h & (3U << G_MDSFT_CYCLETYPE)) != G_CYC_2CYCLE) {
@@ -2701,7 +2709,7 @@ void Interpreter::UploadBaseTexture(const uint8_t* rgba32Buf, uint32_t width, ui
     {
         const size_t base = (size_t)width * height * 4;
         const bool mips = mCurrentMipExtraLevels > 0 ||
-                          (mAutoMipmapsEnabled && mImportIsHd && !mImportIndexed && width > 1 && height > 1);
+                          (AutoMipmaps() && mImportIsHd && !mImportIndexed && width > 1 && height > 1);
         TextureCacheAccountUpload(mips ? base + base / 3 : base);
     }
     if (mCurrentMipExtraLevels > 0) {
@@ -2718,7 +2726,7 @@ void Interpreter::UploadBaseTexture(const uint8_t* rgba32Buf, uint32_t width, ui
     // channel; averaging indices is meaningless, so they stay single-level.
     // Non-HD (original low-res N64) textures also stay single-level: auto mips are
     // only worthwhile for upscaled HD replacements.
-    if (!mAutoMipmapsEnabled || !mImportIsHd || mImportIndexed || width <= 1 || height <= 1) {
+    if (!AutoMipmaps() || !mImportIsHd || mImportIndexed || width <= 1 || height <= 1) {
         mRapi->UploadTexture(rgba32Buf, width, height);
         return;
     }
@@ -3541,7 +3549,7 @@ void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx
     // as a GPU mip chain (MIP_LOD); LOD_FRACTION is then computed per-pixel in the
     // fragment shader from UV derivatives (TEX_LOD).
     uint8_t mipExtraLevels = DetectMipChain(mRdp->first_tile_index);
-    if (mRdp->other_mode_h & G_TL_LOD) {
+    if (mMipmapsEnabled && (mRdp->other_mode_h & G_TL_LOD)) {
         cc_options |= SHADER_OPT(TEX_LOD);
     }
     if (mipExtraLevels > 0) {
@@ -3636,13 +3644,14 @@ void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx
         // TMEM data belongs to the same load as tile 0 (one pyramid), the
         // tmem-index heuristic would bind an unrelated texture for it — sample
         // tile 0 instead (the LOD fraction then blends identical texels).
+        // With mipmaps off it's always tile 0, so LOD blends draw the base.
         if (i == 1 && tile != mRdp->first_tile_index && (mRdp->other_mode_h & G_TL_LOD) && mipExtraLevels == 0 &&
             (mRdp->other_mode_h & (3U << G_MDSFT_CYCLETYPE)) == G_CYC_2CYCLE) {
             const uint16_t baseTmem = mRdp->texture_tile[mRdp->first_tile_index].tmem;
             const uint16_t lodTmem = mRdp->texture_tile[tile].tmem;
             const RDP::TmemLoadEntry* e0 = FindTmemLoad(baseTmem);
             const RDP::TmemLoadEntry* e1 = FindTmemLoad(lodTmem);
-            if (e0 != nullptr && e0 == e1 && lodTmem != baseTmem) {
+            if (!mMipmapsEnabled || (e0 != nullptr && e0 == e1 && lodTmem != baseTmem)) {
                 tile = mRdp->first_tile_index;
             }
         }

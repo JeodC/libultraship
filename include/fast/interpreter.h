@@ -601,6 +601,8 @@ class Interpreter {
     // Auto-generated mip chains for HD replacements. On by default; a port can turn them off
     // where the driver cannot draw with them.
     void SetAutoMipmapsEnabled(bool enabled);
+    // Off draws every texture at full size: no N64 mip levels and no generated HD mips.
+    void SetMipmapsEnabled(bool enabled);
 
     void GfxSpMatrix(uint8_t params, const int32_t* addr);
     void GfxSpPopMatrix(uint32_t count);
@@ -675,6 +677,10 @@ class Interpreter {
     void TextureCacheAccountUpload(size_t bytes);
     bool mResolvedResourceCacheEnabled = false;
     bool mAutoMipmapsEnabled = true;
+    bool mMipmapsEnabled = true;
+    bool AutoMipmaps() const {
+        return mMipmapsEnabled && mAutoMipmapsEnabled;
+    }
     // Same memoization, for the alt-aware texture path (AcquireDrawTexture): the settled
     // resource per path pointer. Alt assets decide what "settled" means, so the map is
     // dropped whenever that setting changes. -1 = no resolution cached yet.
