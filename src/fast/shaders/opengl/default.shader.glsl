@@ -150,7 +150,7 @@
                     @if(o_uses_lod)
                         // N64 texture LOD (RDP-accurate): max absolute UV derivative,
                         // linear fraction between tiles, sharpen/detail handling
-                        vec2 lodScaled = vTexCoordAdj0 * texSize0;
+                        vec2 lodScaled = vTexCoordAdj0 * uTexClamp[0].zw;
                         vec2 lodMaxD = max(abs(dFdx(lodScaled)), abs(dFdy(lodScaled)));
                         float lodMaxDst = max(max(lodMaxD.x, lodMaxD.y) * uLodParams.x, 0.000001);
                         if (uLodParams.z > 0.5) { // sharpen or detail

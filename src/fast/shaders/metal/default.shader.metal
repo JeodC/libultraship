@@ -389,7 +389,7 @@ fragment FragOut fragmentShader(
                 @if(o_uses_lod)
                     // N64 texture LOD (RDP-accurate): max absolute UV derivative,
                     // linear fraction between tiles, sharpen/detail handling
-                    float2 lodScaled = vTexCoordAdj0 * texSize0;
+                    float2 lodScaled = vTexCoordAdj0 * drawUniforms.texture_clamp[0].zw;
                     float2 lodMaxD = max(abs(dfdx(lodScaled)), abs(dfdy(lodScaled)));
                     float lodMaxDst = max(max(lodMaxD.x, lodMaxD.y) * drawUniforms.lod_params.x, 0.000001);
                     if (drawUniforms.lod_params.z > 0.5) { // sharpen or detail

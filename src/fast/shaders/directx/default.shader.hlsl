@@ -379,13 +379,9 @@ PSOutput PSMain(PSInput input, float4 screenSpace : SV_Position) {
 
             @if(i == 0)
                 @if(o_uses_lod)
-                    @if(!s && !t)
-                        int2 texSize0;
-                        g_texture0.GetDimensions(texSize0.x, texSize0.y);
-                    @end
                     // N64 texture LOD (RDP-accurate): max absolute UV derivative,
                     // linear fraction between tiles, sharpen/detail handling
-                    float2 lodScaled = tc0 * float2(texSize0);
+                    float2 lodScaled = tc0 * texture_clamp[0].zw;
                     float2 lodMaxD = max(abs(ddx(lodScaled)), abs(ddy(lodScaled)));
                     float lodMaxDst = max(max(lodMaxD.x, lodMaxD.y) * lod_params.x, 0.000001);
                     if (lod_params.z > 0.5) { // sharpen or detail
@@ -433,13 +429,8 @@ PSOutput PSMain(PSInput input, float4 screenSpace : SV_Position) {
                 @end
             @elseif(o_palette[i])
                 @if(!s && !t)
-                    @if(i == 1)
-                        int2 texSize1;
-                        g_texture1.GetDimensions(texSize1.x, texSize1.y);
-                    @elseif(!o_uses_lod)
-                        int2 texSize0;
-                        g_texture0.GetDimensions(texSize0.x, texSize0.y);
-                    @end
+                    int2 texSize@{i};
+                    g_texture@{i}.GetDimensions(texSize@{i}.x, texSize@{i}.y);
                 @end
                 float4 texVal@{i} = paletteSampleCI(g_texture@{i}, g_sampler@{i}, tc@{i}, float2(texSize@{i}), palette_params[@{i}]);
             @elseif(o_three_point_filtering)
