@@ -47,6 +47,12 @@
 
 #include "libultraship/libultra/os.h"
 
+#ifdef __APPLE__
+#include <SDL_cpuinfo.h>
+#else
+#include <SDL2/SDL_cpuinfo.h>
+#endif
+
 #include <spdlog/fmt/fmt.h>
 
 #ifdef _WIN32
@@ -304,10 +310,6 @@ void Interpreter::LatchCombinerUniforms() {
                 u.debug_tint[1] = 1.0f;
                 u.debug_tint[3] = 0.65f;
                 break;
-            case 3: // base shown because HD upload was deferred — red
-                u.debug_tint[0] = 1.0f;
-                u.debug_tint[3] = 0.65f;
-                break;
         }
     }
 
@@ -319,7 +321,6 @@ ShaderProgram* Interpreter::LookupOrCreateShaderProgram(uint64_t id0, uint64_t i
     if (prg == nullptr) {
         mRapi->UnloadShader(mRenderingState.mShaderProgram);
         prg = mRapi->CreateAndLoadNewShader(id0, id1);
-        mFrameShaderCompiles++;
         mRenderingState.mShaderProgram = prg;
     }
     return prg;
@@ -663,32 +664,8 @@ void Interpreter::SetAutoMipmapsEnabled(bool enabled) {
 void Interpreter::SetResolvedResourceCacheEnabled(bool enabled) {
     mResolvedResourceCacheEnabled = enabled;
     if (!enabled) {
-        mResolvedResourceCache.clear();
         mDrawTextureCache.clear();
     }
-}
-
-// Texture binds resolve the same paths every frame; skip the resource
-// manager's string/hash/mutex work by memoizing on the pointer.
-std::shared_ptr<Ship::IResource> Interpreter::ResolveResourceCached(const char* path) {
-    if (path == nullptr) {
-        return nullptr;
-    }
-    if (!mResolvedResourceCacheEnabled) {
-        return Ship::Context::GetRawInstance()->GetResourceManager()->LoadResourceProcess(path);
-    }
-    auto it = mResolvedResourceCache.find(path);
-    if (it != mResolvedResourceCache.end()) {
-        return it->second;
-    }
-    auto res = Ship::Context::GetRawInstance()->GetResourceManager()->LoadResourceProcess(path);
-    // Only memoize a hit. The resource manager caches its own misses, so re-asking
-    // for one is cheap, and CacheExternalResource can turn a path that missed into a
-    // valid resource at runtime. A memoized null would outlive the resource itself.
-    if (res != nullptr) {
-        mResolvedResourceCache[path] = res;
-    }
-    return res;
 }
 
 // FNV-1a over the TLUT staging (both halves), tracking null halves distinctly
@@ -763,25 +740,16 @@ uint32_t Interpreter::AcquirePaletteTexture() {
 }
 
 void Interpreter::TextureCacheClear() {
+    // Freed next frame, once nothing in flight can sample them.
     for (const auto& entry : mTextureCache.map) {
-        mTextureCache.free_texture_ids.push_back(entry.second.texture_id);
+        mTextureCache.deferred_free_texture_ids.push_back(entry.second.texture_id);
     }
-    // Reclaim ids that were pending deferred recycle so a full reset doesn't lose them.
-    mTextureCache.free_texture_ids.insert(mTextureCache.free_texture_ids.end(),
-                                          mTextureCache.deferred_free_texture_ids.begin(),
-                                          mTextureCache.deferred_free_texture_ids.end());
-    mTextureCache.deferred_free_texture_ids.clear();
     mTextureCache.map.clear();
     mTextureCache.lru.clear();
     mTextureCache.resident_bytes = 0;
-    mResolvedResourceCache.clear();
     mDrawTextureCache.clear();
     mVanillaTextures.clear();
     mAltMissing.clear();
-    // Drop async texture futures too — they hold shared_ptrs to resources that an
-    // alt-asset toggle (which calls gfx_texture_cache_clear) has just invalidated.
-    mTexFutures.clear();
-    mTexSwappedIn.clear();
     // Pre-allocate buckets so the map never rehashes during normal operation.
     // Rehashing invalidates all iterators, including those stored in LRU entries.
     mTextureCache.map.reserve(mTextureCacheMaxSize != 0 ? mTextureCacheMaxSize : TEXTURE_CACHE_MAX_SIZE);
@@ -806,31 +774,181 @@ size_t Interpreter::GetTextureCacheMaxSize() const {
 
 void Interpreter::SetTextureCacheBudgetBytes(size_t maxBytes) {
     mTextureCacheMaxBytes = maxBytes;
-    while (maxBytes != 0 && mTextureCache.resident_bytes > maxBytes && mTextureCache.map.size() > 1) {
-        const size_t before = mTextureCache.map.size();
-        TextureCacheEvictOldest();
-        if (mTextureCache.map.size() == before) {
-            break;
-        }
-    }
+    TextureCacheEvictToBudget();
 }
 
 size_t Interpreter::GetTextureCacheBudgetBytes() const {
     return mTextureCacheMaxBytes;
 }
 
-size_t Interpreter::GetTextureCacheResidentBytes() const {
-    return mTextureCache.resident_bytes;
+static size_t SystemRamBytes() {
+    return (size_t)std::max(SDL_GetSystemRAM(), 512) * 1024 * 1024;
 }
 
-GfxCacheStats Interpreter::ConsumeGfxCacheStats() {
-    GfxCacheStats stats = mGfxCacheStats;
-    stats.size = mTextureCache.map.size();
-    stats.capacity = mTextureCacheMaxSize;
-    stats.residentBytes = mTextureCache.resident_bytes;
-    stats.budgetBytes = mTextureCacheMaxBytes;
-    mGfxCacheStats = {};
-    return stats;
+// The budget minus framebuffer memory (keeping at least a quarter), capped at a quarter of
+// RAM since drivers keep a system-memory copy of resident textures.
+size_t Interpreter::TextureCacheEffectiveBudget() const {
+    if (mTextureCacheMaxBytes == 0) {
+        return 0;
+    }
+    const size_t floor = mTextureCacheMaxBytes / 4;
+    const size_t budget =
+        mFramebufferBytes + floor >= mTextureCacheMaxBytes ? floor : mTextureCacheMaxBytes - mFramebufferBytes;
+    return std::min(budget, SystemRamBytes() / 4);
+}
+
+void Interpreter::TextureCacheEvictToBudget() {
+    const size_t budget = TextureCacheEffectiveBudget();
+    while (budget != 0 && mTextureCache.resident_bytes > budget && mTextureCache.map.size() > 1) {
+        const size_t before = mTextureCache.map.size();
+        TextureCacheEvictOldest();
+        if (mTextureCache.map.size() == before) {
+            break; // everything left is bound
+        }
+    }
+}
+
+// Hand last frame's evicted textures back to the backend, which frees their video memory.
+void Interpreter::TextureCacheReleaseDeferred() {
+    for (uint32_t id : mTextureCache.deferred_free_texture_ids) {
+        mRapi->DeleteTexture(id);
+    }
+    mTextureCache.deferred_free_texture_ids.clear();
+}
+
+size_t Interpreter::HdBudgetBytes() const {
+    if (mHdBudgetBytes != 0) {
+        return mHdBudgetBytes;
+    }
+    // An eighth of RAM, clamped to 256 MB-4 GB. Drawn textures also have a driver-side copy.
+    constexpr size_t kMiB = 1024 * 1024;
+    return std::clamp(SystemRamBytes() / 8, 256 * kMiB, 4096 * kMiB);
+}
+
+void Interpreter::SetReplacementMemoryBudgetBytes(size_t maxBytes) {
+    mHdBudgetBytes = maxBytes;
+}
+
+size_t Interpreter::GetReplacementMemoryBudgetBytes() const {
+    return HdBudgetBytes();
+}
+
+size_t Interpreter::GetReplacementMemoryBytes() const {
+    return mHdResidentBytes;
+}
+
+// The image plus any mip chain built for it
+static size_t ReplacementBytes(const Ship::IResource* res) {
+    const auto* tex = dynamic_cast<const Fast::Texture*>(res);
+    if (tex == nullptr) {
+        return 0;
+    }
+    size_t bytes = tex->ImageDataSize;
+    if (tex->MipsReady.load(std::memory_order_acquire)) {
+        for (const auto& mip : tex->Mips) {
+            bytes += mip.Pixels.size();
+        }
+    }
+    return bytes;
+}
+
+// Mark an HD texture as drawn this frame, tracking it if it's new. Non-HD ones are ignored.
+void Interpreter::HdTouch(const std::shared_ptr<Ship::IResource>& res, const void* drawKey) const {
+    if (res == nullptr) {
+        return;
+    }
+    auto it = mHdResident.find(res.get());
+    if (it == mHdResident.end()) {
+        if (!res->GetInitData()->Path.starts_with(Ship::IResource::gAltAssetPrefix)) {
+            return;
+        }
+        it = mHdResident.emplace(res.get(), HdResident{ res, ReplacementBytes(res.get()) }).first;
+        mHdResidentBytes += it->second.bytes;
+    }
+    it->second.lastUsed = mHdFrame;
+    if (drawKey != nullptr &&
+        std::find(it->second.drawKeys.begin(), it->second.drawKeys.end(), drawKey) == it->second.drawKeys.end()) {
+        it->second.drawKeys.push_back(drawKey);
+    }
+}
+
+// Recount once a late mip chain is built
+void Interpreter::HdRefreshBytes(const Ship::IResource* res) const {
+    auto it = mHdResident.find(res);
+    if (it == mHdResident.end()) {
+        return;
+    }
+    const size_t bytes = ReplacementBytes(res);
+    mHdResidentBytes = mHdResidentBytes - it->second.bytes + bytes;
+    it->second.bytes = bytes;
+}
+
+// Each frame, track finished prefetches, then drop the least recently drawn HD textures until
+// under 7/8 of budget, along with every cache entry and GPU texture made from them.
+void Interpreter::HdEvictToBudget() {
+    SyncAltAssetState();
+    for (auto it = mPrefetches.begin(); it != mPrefetches.end();) {
+        if (it->second.result.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+            ++it;
+            continue;
+        }
+        if (auto res = it->second.result.get(); res != nullptr && !mHdResident.contains(res.get())) {
+            HdTouch(res);
+            if (auto entry = mHdResident.find(res.get()); entry != mHdResident.end()) {
+                entry->second.lastUsed = it->second.frame; // not drawn yet: as old as the request
+            }
+        } else if (res != nullptr) {
+            HdRefreshBytes(res.get()); // drawn before its mip chain was done
+        }
+        it = mPrefetches.erase(it);
+    }
+
+    const bool altEnabled = Ship::Context::GetRawInstance()->GetResourceManager()->IsAltAssetsEnabled();
+    const size_t budget = altEnabled ? HdBudgetBytes() : 0;
+    if (mHdResidentBytes <= budget) {
+        return;
+    }
+    std::vector<std::pair<uint64_t, const Ship::IResource*>> order;
+    order.reserve(mHdResident.size());
+    for (const auto& [key, entry] : mHdResident) {
+        // Skip ones with a queued prefetch, or its decode would bring them back untracked.
+        if (entry.lastUsed + 1 < mHdFrame && !mPrefetches.contains(entry.res->GetInitData()->Path)) {
+            order.emplace_back(entry.lastUsed, key);
+        }
+    }
+    std::sort(order.begin(), order.end());
+
+    auto rm = Ship::Context::GetRawInstance()->GetResourceManager();
+    std::vector<std::pair<const uint8_t*, size_t>> released;
+    const size_t target = budget / 8 * 7;
+    for (const auto& [lastUsed, key] : order) {
+        if (mHdResidentBytes <= target) {
+            break;
+        }
+        auto it = mHdResident.find(key);
+        HdResident& entry = it->second;
+        for (const void* drawKey : entry.drawKeys) {
+            auto d = mDrawTextureCache.find(drawKey);
+            if (d != mDrawTextureCache.end() && d->second.get() == key) {
+                mDrawTextureCache.erase(d);
+            }
+        }
+        const std::string& path = entry.res->GetInitData()->Path;
+        if (auto* tex = dynamic_cast<Fast::Texture*>(entry.res.get())) {
+            mVanillaTextures.erase(tex);
+            if (tex->ImageData != nullptr) {
+                released.emplace_back(tex->ImageData, tex->ImageDataSize);
+            }
+        }
+        rm->UnloadResource(path);
+        mHdResidentBytes -= std::min(mHdResidentBytes, entry.bytes);
+        mHdResident.erase(it);
+    }
+    TextureCacheDeleteRanges(released);
+}
+
+size_t Interpreter::GetTextureCacheResidentBytes() const {
+    return mTextureCache.resident_bytes;
 }
 
 void Interpreter::ShaderCacheClear() {
@@ -852,50 +970,49 @@ bool Interpreter::ReplacementFits(const std::shared_ptr<Ship::IResource>& res, c
     return false;
 }
 
-// Decode every replacement under a path prefix on the thread pool before it is drawn.
-// Without this the first draw stalls on the load, or shows the original until the load
-// lands when loads are asynchronous.
+// Safe from any thread; the render thread starts it next frame.
 void Interpreter::PrefetchReplacementGroup(const std::string& group) {
+    if (group.empty()) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(mPrefetchQueueMutex);
+    mPrefetchQueue.push_back(group);
+}
+
+// Decode every replacement under a path prefix on the thread pool before it is drawn.
+// Without this the first draw stalls on the load.
+void Interpreter::PrefetchGroupNow(const std::string& group) {
     SyncAltAssetState();
-    if (group.empty() || !mTexPrefetched.insert(group).second) {
+    if (group.empty() || mTexPrefetched.contains(group) || mHdResidentBytes >= HdBudgetBytes() / 2) {
         return;
     }
     auto rm = Ship::Context::GetRawInstance()->GetResourceManager();
     if (!rm->IsAltAssetsEnabled()) {
         return;
     }
+    mTexPrefetched.insert(group);
     ListAltFiles();
     const std::string prefix = Ship::IResource::gAltAssetPrefix + group;
+    const bool mips = mAutoMipmapsEnabled;
     size_t queued = 0;
     for (auto it = std::lower_bound(mAltFiles.begin(), mAltFiles.end(), prefix);
-         it != mAltFiles.end() && it->compare(0, prefix.size(), prefix) == 0; ++it) {
-        const std::string base = it->substr(Ship::IResource::gAltAssetPrefix.length());
-        if (base.find('@') != std::string::npos || mTexFutures.count(base) != 0) {
+         it != mAltFiles.end() && it->compare(0, prefix.size(), prefix) == 0 && queued < 1024; ++it) {
+        // Palette variants decode when their palette is first drawn
+        if (it->find('@') != std::string::npos || mPrefetches.contains(*it)) {
             continue;
         }
-        if (!mAutoMipmapsEnabled) {
-            mTexFutures[base] = rm->LoadResourceAsync(*it, /*loadExact=*/true, BS::pr::lowest);
-        } else {
-            mTexFutures[base] =
-                rm->GetThreadPool()
-                    ->submit_task(
-                        [rm, file = *it]() -> std::shared_ptr<Ship::IResource> {
-                            auto res = rm->LoadResourceProcess(file, /*loadExact=*/true);
-                            auto tex = std::dynamic_pointer_cast<Fast::Texture>(res);
-                            if (tex != nullptr && tex->Type == Fast::TextureType::RGBA32bpp &&
-                                tex->ImageData != nullptr && MipLevelCount(tex->Width, tex->Height) > 1 &&
-                                !tex->MipsBuilding.exchange(true)) {
-                                BuildMipChain(tex->ImageData, tex->Width, tex->Height, tex->Mips);
-                                tex->MipsReady.store(true, std::memory_order_release);
-                            }
-                            return res;
-                        },
-                        BS::pr::lowest)
-                    .share();
-        }
-        if (++queued >= 1024) {
-            break;
-        }
+        auto decode = [rm, file = *it, mips]() -> std::shared_ptr<Ship::IResource> {
+            auto res = rm->LoadResourceProcess(file, /*loadExact=*/true);
+            auto tex = std::dynamic_pointer_cast<Fast::Texture>(res);
+            if (mips && tex != nullptr && tex->Type == Fast::TextureType::RGBA32bpp && tex->ImageData != nullptr &&
+                MipLevelCount(tex->Width, tex->Height) > 1 && !tex->MipsBuilding.exchange(true)) {
+                BuildMipChain(tex->ImageData, tex->Width, tex->Height, tex->Mips);
+                tex->MipsReady.store(true, std::memory_order_release);
+            }
+            return res;
+        };
+        mPrefetches[*it] = { rm->GetThreadPool()->submit_task(decode, BS::pr::lowest).share(), mHdFrame };
+        queued++;
     }
 }
 
@@ -922,15 +1039,12 @@ std::shared_ptr<Ship::IResource> Interpreter::LoadPaletteStandIn(const std::stri
     return res != nullptr && ReplacementFits(res, *it) ? res : nullptr;
 }
 
-// Toggling alt assets invalidates everything AcquireDrawTexture remembered, including
-// settled async loads.
+// Toggling alt assets invalidates everything AcquireDrawTexture remembered.
 void Interpreter::SyncAltAssetState() {
     const bool altEnabled = Ship::Context::GetRawInstance()->GetResourceManager()->IsAltAssetsEnabled();
     if (mDrawTextureCacheAltAssets != (int8_t)altEnabled) {
         mDrawTextureCache.clear();
         mAltMissing.clear();
-        mTexFutures.clear();
-        mTexSwappedIn.clear();
         mTexPrefetched.clear();
         mAltFiles.clear();
         mAltFilesListed = false;
@@ -949,12 +1063,13 @@ std::shared_ptr<Ship::IResource> Interpreter::AcquireDrawTexture(const char* nam
     SyncAltAssetState();
 
     // Texture binds ask for the same paths every frame, and the answer only changes when
-    // an async load settles or alt assets are toggled. Memoize the settled resource per
-    // path pointer (the opt-in contract of ResolveResourceCached) so the steady state
-    // skips the string building and the resource manager's hash and mutex work.
+    // alt assets are toggled. Memoize the settled resource per path pointer (opt-in, see
+    // SetResolvedResourceCacheEnabled) so the steady state skips the string building and
+    // the resource manager's hash and mutex work.
     if (mResolvedResourceCacheEnabled) {
         auto it = mDrawTextureCache.find(name);
         if (it != mDrawTextureCache.end()) {
+            HdTouch(it->second);
             return it->second;
         }
     }
@@ -964,6 +1079,7 @@ std::shared_ptr<Ship::IResource> Interpreter::AcquireDrawTexture(const char* nam
         if (mResolvedResourceCacheEnabled && res != nullptr) {
             mDrawTextureCache[name] = res;
         }
+        HdTouch(res, name);
         return res;
     };
 
@@ -995,68 +1111,31 @@ std::shared_ptr<Ship::IResource> Interpreter::AcquireDrawTexture(const char* nam
     const std::string altName = Ship::IResource::gAltAssetPrefix + nameStr;
 
     if (mReplacementGroupOf) {
-        PrefetchReplacementGroup(mReplacementGroupOf(nameStr));
+        PrefetchGroupNow(mReplacementGroupOf(nameStr));
     }
 
-    // Synchronous (async loading off): try the HD path, fall back to vanilla when absent.
-    if (!mAsyncTextureLoad) {
-        if (auto hd = rm->LoadResource(altName, /*loadExact=*/true); hd && ReplacementFits(hd, altName)) {
+    // Check the archive listing first, so textures the pack doesn't cover skip a load.
+    ListAltFiles();
+    if (std::binary_search(mAltFiles.begin(), mAltFiles.end(), altName)) {
+        if (auto hd = LoadReplacement(altName); hd != nullptr && ReplacementFits(hd, altName)) {
             return settled(hd);
         }
-        if (auto standIn = LoadPaletteStandIn(nameStr)) {
-            return settled(standIn);
-        }
-        mAltMissing.insert(nameStr);
-        return settled(rm->LoadResource(name, /*loadExact=*/true));
     }
+    if (auto standIn = LoadPaletteStandIn(nameStr)) {
+        return settled(standIn);
+    }
+    mAltMissing.insert(nameStr);
+    return settled(rm->LoadResource(name, /*loadExact=*/true));
+}
 
-    // Already resolved on an earlier frame: keep using that result (HD if it exists, else
-    // vanilla) unconditionally, so it never flickers back under budget pressure.
-    if (mTexSwappedIn.count(nameStr)) {
-        auto& f = mTexFutures[nameStr];
-        if (f.valid() && f.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-            if (auto r = f.get()) {
-                return settled(r);
-            }
-        }
-        if (auto standIn = LoadPaletteStandIn(nameStr)) {
-            return settled(standIn);
-        }
-        return settled(rm->LoadResource(name, /*loadExact=*/true));
+// Use a finished prefetch; a queued one sits behind the rest at lowest priority, so load it
+// here instead of waiting.
+std::shared_ptr<Ship::IResource> Interpreter::LoadReplacement(const std::string& path) {
+    if (auto it = mPrefetches.find(path);
+        it != mPrefetches.end() && it->second.result.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+        return it->second.result.get();
     }
-
-    // Async path: decode the HD ("alt/name") on the thread pool while vanilla renders.
-    auto& fut = mTexFutures[nameStr];
-    if (!fut.valid()) {
-        fut = rm->LoadResourceAsync(altName, /*loadExact=*/true, BS::pr::lowest);
-    }
-    if (fut.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-        if (auto res = fut.get()) {
-            // HD decoded. Its first draw triggers the (large) GPU upload — budget that swap-in
-            // so a whole level's HD textures don't all upload the same frame. Over budget →
-            // keep showing vanilla and try again next frame (so this one is not remembered).
-            if (mReplacementUploadBudget > 0 && mFrameReplacementUploads >= mReplacementUploadBudget) {
-                return rm->LoadResource(name, /*loadExact=*/true);
-            }
-            if (!ReplacementFits(res, altName)) {
-                mTexSwappedIn.insert(nameStr);
-                mAltMissing.insert(nameStr);
-                return settled(rm->LoadResource(name, /*loadExact=*/true));
-            }
-            mFrameReplacementUploads++;
-            mTexSwappedIn.insert(nameStr);
-            return settled(res);
-        }
-        // No HD for this texture — settle on vanilla and stop re-checking.
-        mTexSwappedIn.insert(nameStr);
-        if (auto standIn = LoadPaletteStandIn(nameStr)) {
-            return settled(standIn);
-        }
-        mAltMissing.insert(nameStr);
-        return settled(rm->LoadResource(name, /*loadExact=*/true));
-    }
-    // Still decoding — render the cheap vanilla version this frame, and do not remember it.
-    return rm->LoadResource(name, /*loadExact=*/true);
+    return Ship::Context::GetRawInstance()->GetResourceManager()->LoadResource(path, /*loadExact=*/true);
 }
 
 bool Interpreter::TextureCacheLookup(int i, const TextureCacheKey& key) {
@@ -1115,7 +1194,6 @@ void Interpreter::TextureCacheEvictOldest() {
     if (lruIt == mTextureCache.lru.end()) {
         return;
     }
-    mGfxCacheStats.evictions++;
     TextureCacheMap::iterator it = lruIt->it;
     mTextureCache.deferred_free_texture_ids.push_back(it->second.texture_id);
     mTextureCache.resident_bytes -= std::min(mTextureCache.resident_bytes, it->second.bytes);
@@ -1130,16 +1208,7 @@ void Interpreter::TextureCacheAccountUpload(size_t bytes) {
         node->second.bytes = bytes;
         mTextureCache.resident_bytes += bytes;
     }
-    if (mTextureCacheMaxBytes == 0) {
-        return;
-    }
-    while (mTextureCache.resident_bytes > mTextureCacheMaxBytes && mTextureCache.map.size() > 1) {
-        const size_t before = mTextureCache.map.size();
-        TextureCacheEvictOldest();
-        if (mTextureCache.map.size() == before) {
-            break; // everything left is bound
-        }
-    }
+    TextureCacheEvictToBudget();
 }
 
 // The replacement to draw a CI tile with when the pack has art for the palette it is
@@ -1191,6 +1260,7 @@ std::shared_ptr<Fast::Texture> Interpreter::LoadPaletteVariant(const RawTexMetad
         variant->Type != metadata->type || variant->ImageDataSize != metadata->resource->ImageDataSize) {
         return nullptr;
     }
+    HdTouch(variant);
     return variant;
 }
 
@@ -1332,6 +1402,31 @@ void Interpreter::TextureCacheDelete(const uint8_t* origAddr) {
     }
 }
 
+// Drop every entry made from pixels in these ranges, in one pass
+void Interpreter::TextureCacheDeleteRanges(std::vector<std::pair<const uint8_t*, size_t>>& ranges) {
+    if (ranges.empty()) {
+        return;
+    }
+    std::sort(ranges.begin(), ranges.end());
+    for (auto it = mTextureCache.map.begin(); it != mTextureCache.map.end();) {
+        const uint8_t* addr = it->first.texture_addr;
+        auto r = std::upper_bound(ranges.begin(), ranges.end(), std::make_pair(addr, SIZE_MAX));
+        if (r == ranges.begin() || addr >= std::prev(r)->first + std::prev(r)->second) {
+            ++it;
+            continue;
+        }
+        for (int j = 0; j < SHADER_MAX_TEXTURES; j++) {
+            if (mRenderingState.mTextures[j] == &*it) {
+                mRenderingState.mTextures[j] = nullptr;
+            }
+        }
+        mTextureCache.lru.erase(it->second.lru_location);
+        mTextureCache.deferred_free_texture_ids.push_back(it->second.texture_id);
+        mTextureCache.resident_bytes -= std::min(mTextureCache.resident_bytes, it->second.bytes);
+        it = mTextureCache.map.erase(it);
+    }
+}
+
 // Drop the entry bound to a shader slot before anything uploaded to it. Nothing drew
 // with its id, so it goes straight back to the free list.
 void Interpreter::TextureCacheDrop(int i) {
@@ -1358,6 +1453,7 @@ void Interpreter::TextureCacheDeleteByPalette(const uint8_t* palAddr) {
             }
             mTextureCache.lru.erase(it->second.lru_location);
             mTextureCache.deferred_free_texture_ids.push_back(it->second.texture_id);
+            mTextureCache.resident_bytes -= std::min(mTextureCache.resident_bytes, it->second.bytes);
             it = mTextureCache.map.erase(it);
         } else {
             ++it;
@@ -2599,8 +2695,6 @@ void Interpreter::BoxDownsampleRgba32(const uint8_t* src, uint32_t srcW, uint32_
 
 void Interpreter::UploadBaseTexture(const uint8_t* rgba32Buf, uint32_t width, uint32_t height) {
     mImportUploaded = true;
-    mFrameTextureUploads++;
-    mFrameUploadBytes += (size_t)width * height * 4;
     {
         const size_t base = (size_t)width * height * 4;
         const bool mips = mCurrentMipExtraLevels > 0 ||
@@ -2643,6 +2737,7 @@ void Interpreter::UploadBaseTexture(const uint8_t* rgba32Buf, uint32_t width, ui
             if (!res->MipsBuilding.exchange(true)) {
                 BuildMipChain(rgba32Buf, width, height, res->Mips, threads);
                 res->MipsReady.store(true, std::memory_order_release);
+                HdRefreshBytes(res);
             } else {
                 // The prefetch is building it now. Don't wait.
                 res = nullptr;
@@ -2664,26 +2759,9 @@ void Interpreter::UploadBaseTexture(const uint8_t* rgba32Buf, uint32_t width, ui
     mRapi->UploadTextureMip(rgba32Buf, width, height, 0, totalLevels);
     mRapi->SetNextTextureAutoMipmap(false);
 
-    // Debug: tint each generated level a distinct color so mip selection is
-    // visible in-game (distant surfaces change color as lower levels are picked).
-    const bool mipDebug = Ship::Context::GetRawInstance()->GetConsoleVariables()->GetInteger("gMipDebug", 0) != 0;
-    static const uint8_t kMipDebugColors[][3] = {
-        { 255, 0, 0 },   { 0, 255, 0 },   { 0, 128, 255 },   { 255, 255, 0 },
-        { 255, 0, 255 }, { 0, 255, 255 }, { 255, 255, 255 },
-    };
     for (uint32_t level = 1; level < totalLevels && level <= levels->size(); level++) {
         const Fast::Texture::MipLevel& mip = (*levels)[level - 1];
         const uint8_t* pixels = mip.Pixels.data();
-        if (mipDebug) {
-            mMipLevelBuffer.assign(pixels, pixels + mip.Pixels.size());
-            const uint8_t* color = kMipDebugColors[(level - 1) % 7];
-            for (size_t p = 0; p < (size_t)mip.Width * mip.Height; p++) {
-                mMipLevelBuffer[p * 4 + 0] = color[0];
-                mMipLevelBuffer[p * 4 + 1] = color[1];
-                mMipLevelBuffer[p * 4 + 2] = color[2];
-            }
-            pixels = mMipLevelBuffer.data();
-        }
         mRapi->UploadTextureMip(pixels, mip.Width, mip.Height, level, totalLevels);
     }
 }
@@ -2913,13 +2991,6 @@ void Interpreter::ImportTexture(int i, int tile, bool importReplacement) {
         }
     }
 
-    if (importReplacement && mAllowReplacementDefer && mReplacementUploadBudget > 0 &&
-        mFrameReplacementUploads >= mReplacementUploadBudget &&
-        mTextureCache.map.find(key) == mTextureCache.map.end()) {
-        mDeferredReplacementUpload = true;
-        return;
-    }
-
     if (TextureCacheLookup(i, key)) {
         return;
     }
@@ -2934,23 +3005,6 @@ void Interpreter::ImportTexture(int i, int tile, bool importReplacement) {
             }
         }
     } dropUnlessUploaded{ this, i };
-
-    struct CountImport {
-        Interpreter* gfx;
-        std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
-        ~CountImport() {
-            gfx->mGfxCacheStats.imports++;
-            gfx->mGfxCacheStats.importNs +=
-                std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count();
-        }
-    } countImport{ this };
-
-    // Past the lookup on a miss means this replacement will upload now — count it
-    // against this frame's budget so further first-time replacements are deferred.
-    if (importReplacement) {
-        mFrameReplacementUploads++;
-        mReplacementUploadedThisCall = true;
-    }
 
     // Guard against zero-sized textures that would cause divide-by-zero
     // or GPU API errors in UploadTexture.
@@ -3624,28 +3678,7 @@ void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx
                     ImportTextureMask(SHADER_FIRST_MASK_TEXTURE + i, tile);
                 }
                 if (mRdp->loaded_texture[i].blended) {
-                    // Allow deferring the HD upload only for non-indexed bases — those can
-                    // be bound into the replacement slot as a safe RGBA fallback. Indexed
-                    // bases would sample wrong, so always upload them immediately.
-                    mAllowReplacementDefer = !palettized[i];
-                    mDeferredReplacementUpload = false;
-                    mReplacementUploadedThisCall = false;
                     ImportTexture(SHADER_FIRST_REPLACEMENT_TEXTURE + i, tile, true);
-                    mAllowReplacementDefer = false;
-                    if (mDeferredReplacementUpload && mRenderingState.mTextures[i] != nullptr) {
-                        // HD not uploaded this frame: bind the base into the replacement
-                        // slot so the blend reproduces the base (no pop-in / no garbage).
-                        mRapi->SelectTexture(SHADER_FIRST_REPLACEMENT_TEXTURE + i,
-                                             mRenderingState.mTextures[i]->second.texture_id);
-                        mRenderingState.mTextures[SHADER_FIRST_REPLACEMENT_TEXTURE + i] = mRenderingState.mTextures[i];
-                    }
-                    if (mTextureReplacementDebug) {
-                        // Highest-priority state wins across the two tiles (red > green > blue).
-                        int state = mDeferredReplacementUpload ? 3 : (mReplacementUploadedThisCall ? 2 : 1);
-                        if (state > mDebugTintState) {
-                            mDebugTintState = state;
-                        }
-                    }
                 }
                 mRdp->textures_changed[i] = false;
             }
@@ -6326,7 +6359,7 @@ bool gfx_set_timg_handler_rdp(F3DGfx** cmd0) {
     if ((i & 1) != 1) {
         if (gfx_check_image_signature(imgData) == 1) {
             std::shared_ptr<Fast::Texture> tex =
-                std::static_pointer_cast<Fast::Texture>(gfx->ResolveResourceCached(imgData));
+                std::static_pointer_cast<Fast::Texture>(gfx->AcquireDrawTexture(imgData));
 
             if (tex == nullptr) {
                 (*cmd0)++;
@@ -6356,7 +6389,6 @@ bool gfx_set_timg_handler_rdp(F3DGfx** cmd0) {
 }
 
 bool gfx_set_timg_otr_hash_handler_custom(F3DGfx** cmd0) {
-    uintptr_t addr = (*cmd0)->words.w1;
     (*cmd0)++;
     uint64_t hash = ((uint64_t)(*cmd0)->words.w0 << 32) + (uint64_t)(*cmd0)->words.w1;
 
@@ -6370,8 +6402,7 @@ bool gfx_set_timg_otr_hash_handler_custom(F3DGfx** cmd0) {
         return false;
     }
 
-    // AcquireDrawTexture caches (no per-frame re-decode — the main level-load/render stall) and,
-    // when async loading is enabled, decodes HD textures off-thread while vanilla renders. The GPU
+    // AcquireDrawTexture caches (no per-frame re-decode — the main level-load/render stall). The GPU
     // texture cache keys on the (stable) ImageData pointer + fmt/siz/palette, so cached archive
     // textures don't collide; only CPU-animated textures mutate in place and skip this path.
     std::shared_ptr<Fast::Texture> texture =
@@ -6386,19 +6417,6 @@ bool gfx_set_timg_otr_hash_handler_custom(F3DGfx** cmd0) {
         rawTexMetadata.resource = texture;
 
         char* tex = reinterpret_cast<char*>(texture->ImageData);
-
-        if (tex != nullptr) {
-            (*cmd0)--;
-            uintptr_t oldData = (*cmd0)->words.w1;
-            // TODO: wtf??
-            (*cmd0)->words.w1 = (uintptr_t)tex;
-
-            // if (ourHash != (uint64_t)-1) {
-            //     auto res = ResourceLoad(ourHash);
-            // }
-
-            (*cmd0)++;
-        }
 
         (*cmd0)--;
         F3DGfx* cmd = (*cmd0);
@@ -6425,7 +6443,7 @@ bool gfx_set_timg_otr_filepath_handler_custom(F3DGfx** cmd0) {
     uint32_t texFlags = 0;
     RawTexMetadata rawTexMetadata = {};
 
-    // Cached + async-aware load (see the hash handler above).
+    // Cached load (see the hash handler above).
     std::shared_ptr<Fast::Texture> texture =
         std::static_pointer_cast<Fast::Texture>(mInstance.lock().get()->AcquireDrawTexture(fileName));
     if (texture != nullptr) {
@@ -7599,6 +7617,24 @@ void Interpreter::StartFrame() {
         mRendersToFb = false;
     }
 
+    // Estimated framebuffer memory (4 bytes a sample for color, 4 for depth). It comes out of
+    // the texture budget, so more resolution or MSAA evicts textures instead.
+    size_t fbBytes = 0;
+    for (const auto& fb : mFrameBuffers) {
+        fbBytes += (size_t)fb.second.applied_width * fb.second.applied_height * 8;
+    }
+    if (mRendersToFb) {
+        const size_t pixels = (size_t)mCurDimensions.width * mCurDimensions.height;
+        fbBytes += pixels * 8 * std::max<uint32_t>(1, mMsaaLevel);
+        if (mMsaaLevel > 1) {
+            fbBytes += pixels * 4; // resolve target
+        }
+    }
+    if (fbBytes != mFramebufferBytes) {
+        mFramebufferBytes = fbBytes;
+        TextureCacheEvictToBudget();
+    }
+
     mFbActive = false;
 }
 
@@ -7633,12 +7669,7 @@ void Interpreter::RunGuiOnly() {
     mRapi->StartFrame();
     // Previous frame's GPU work is submitted; ids freed by mid-frame invalidation
     // last frame are now safe to reuse.
-    if (!mTextureCache.deferred_free_texture_ids.empty()) {
-        mTextureCache.free_texture_ids.insert(mTextureCache.free_texture_ids.end(),
-                                              mTextureCache.deferred_free_texture_ids.begin(),
-                                              mTextureCache.deferred_free_texture_ids.end());
-        mTextureCache.deferred_free_texture_ids.clear();
-    }
+    TextureCacheReleaseDeferred();
     mRapi->StartDrawToFramebuffer(mRendersToFb ? mGameFb : 0, (float)mCurDimensions.height / mNativeDimensions.height);
     mRapi->ClearFramebuffer(true, true);
     mRdp->viewport_or_scissor_changed = true;
@@ -7679,22 +7710,20 @@ void Interpreter::Run(Gfx* commands, const std::unordered_map<Mtx*, MtxF>& mtx_r
     mRgbDitherEnabled = Ship::Context::GetRawInstance()->GetConsoleVariables()->GetInteger(
                             "gEnhancements.Graphics.DitherNoise", 0) != 0;
 
-    // Per-frame budget for new HD-replacement texture uploads (0 = unlimited / original
-    // behavior). Spreads big 4K uploads across frames; the base renders until ready.
-    mReplacementUploadBudget = Ship::Context::GetRawInstance()->GetConsoleVariables()->GetInteger(
-        "gEnhancements.Graphics.TextureUploadBudget", 1);
-    mFrameReplacementUploads = 0;
-    mFrameTextureUploads = 0;
-    mFrameShaderCompiles = 0;
-    mFrameUploadBytes = 0;
+    // Start queued prefetches, then trim decoded HD textures to budget before drawing.
+    mHdFrame++;
+    std::vector<std::string> prefetchGroups;
+    std::unique_lock<std::mutex> prefetchLock(mPrefetchQueueMutex);
+    prefetchGroups.swap(mPrefetchQueue);
+    prefetchLock.unlock();
+    for (const std::string& group : prefetchGroups) {
+        PrefetchGroupNow(group);
+    }
+    HdEvictToBudget();
 
     // Debug visualization of HD-replacement state (per-draw fragment tint).
     mTextureReplacementDebug = Ship::Context::GetRawInstance()->GetConsoleVariables()->GetInteger(
                                    "gEnhancements.Graphics.TextureReplacementDebug", 0) != 0;
-
-    // Async texture loading: decode HD/replacement textures off-thread, render vanilla until ready.
-    mAsyncTextureLoad = Ship::Context::GetRawInstance()->GetConsoleVariables()->GetInteger(
-                            "gEnhancements.Graphics.AsyncTextureLoad", 0) != 0;
 
     // Engine built-in custom uniform registers (see CustomUniforms):
     // [0] = frame count / elapsed seconds / delta seconds, [1] = fb dimensions
@@ -7731,12 +7760,7 @@ void Interpreter::Run(Gfx* commands, const std::unordered_map<Mtx*, MtxF>& mtx_r
     mRapi->StartFrame();
     // Previous frame's GPU work is submitted; ids freed by mid-frame invalidation
     // last frame are now safe to reuse.
-    if (!mTextureCache.deferred_free_texture_ids.empty()) {
-        mTextureCache.free_texture_ids.insert(mTextureCache.free_texture_ids.end(),
-                                              mTextureCache.deferred_free_texture_ids.begin(),
-                                              mTextureCache.deferred_free_texture_ids.end());
-        mTextureCache.deferred_free_texture_ids.clear();
-    }
+    TextureCacheReleaseDeferred();
     mRapi->StartDrawToFramebuffer(mRendersToFb ? mGameFb : 0, (float)mCurDimensions.height / mNativeDimensions.height);
     mRapi->ClearFramebuffer(false, true);
     mRdp->viewport_or_scissor_changed = true;

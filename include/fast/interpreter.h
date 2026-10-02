@@ -413,16 +413,6 @@ struct GfxTextureCache {
     size_t resident_bytes = 0;
 };
 
-struct GfxCacheStats {
-    uint32_t imports = 0;
-    uint64_t importNs = 0;
-    uint32_t evictions = 0;
-    size_t size = 0;
-    size_t capacity = 0;
-    size_t residentBytes = 0;
-    size_t budgetBytes = 0;
-};
-
 struct ColorCombiner {
     uint64_t shader_id0;
     uint64_t shader_id1;
@@ -562,12 +552,19 @@ class Interpreter {
     void SetTextureCacheBudgetBytes(size_t maxBytes);
     size_t GetTextureCacheBudgetBytes() const;
     size_t GetTextureCacheResidentBytes() const;
-    GfxCacheStats ConsumeGfxCacheStats();
-    std::shared_ptr<Ship::IResource> ResolveResourceCached(const char* path);
+    // Memory for decoded HD textures; past it, the least recently drawn get dropped.
+    // 0 picks a size from system RAM.
+    void SetReplacementMemoryBudgetBytes(size_t maxBytes);
+    size_t GetReplacementMemoryBudgetBytes() const;
+    size_t GetReplacementMemoryBytes() const;
     bool TextureCacheLookup(int i, const TextureCacheKey& key);
     void TextureCacheDelete(const uint8_t* origAddr);
+    void TextureCacheDeleteRanges(std::vector<std::pair<const uint8_t*, size_t>>& ranges);
     void TextureCacheDeleteByPalette(const uint8_t* palAddr);
     void TextureCacheDrop(int i);
+    void TextureCacheReleaseDeferred();
+    void TextureCacheEvictToBudget();
+    size_t TextureCacheEffectiveBudget() const;
     void ImportTextureRgba16(int tile, bool importReplacement);
     void ImportTextureRgba32(int tile, bool importReplacement);
     void ImportTextureIA4(int tile, bool importReplacement);
@@ -672,10 +669,9 @@ class Interpreter {
     GfxTextureCache mTextureCache{};
     size_t mTextureCacheMaxSize = 0;
     size_t mTextureCacheMaxBytes = 0;
+    size_t mFramebufferBytes = 0; // video memory the framebuffers take, estimated each frame
     void TextureCacheEvictOldest();
     void TextureCacheAccountUpload(size_t bytes);
-    GfxCacheStats mGfxCacheStats{};
-    std::unordered_map<const void*, std::shared_ptr<Ship::IResource>> mResolvedResourceCache;
     bool mResolvedResourceCacheEnabled = false;
     bool mAutoMipmapsEnabled = true;
     // Same memoization, for the alt-aware texture path (AcquireDrawTexture): the settled
@@ -843,37 +839,41 @@ class Interpreter {
     // Cached once per frame from the gEnhancements.Graphics.DitherNoise CVar.
     bool mRgbDitherEnabled = true;
 
-    // Budgeted HD-replacement uploads. Big (e.g. 4K) replacement textures are expensive
-    // to upload; uploading several the same frame they first appear causes a hitch.
-    // We cap how many *new* replacement textures upload per frame and render the base
-    // texture in the meantime (the blend reproduces the base), retrying on later frames.
-    int mReplacementUploadBudget = 1; // max new replacement uploads per frame (0 = unlimited)
-    int mFrameReplacementUploads = 0; // count uploaded so far this frame
-    // Per-frame activity counters for the host's slow-frame log (reset with the budget)
-    int mFrameTextureUploads = 0;
-    int mFrameShaderCompiles = 0;
-    size_t mFrameUploadBytes = 0;
-    bool mAllowReplacementDefer = false;       // set by the draw path only for non-indexed bases
-    bool mDeferredReplacementUpload = false;   // set by ImportTexture when it deferred an upload
-    bool mReplacementUploadedThisCall = false; // set by ImportTexture when it uploaded an HD this call
-
     // Debug visualization of HD replacement state, tinting each draw in the fragment
     // shader (gEnhancements.Graphics.TextureReplacementDebug). State per draw:
-    // 1 = HD active (blue, subtle), 2 = just uploaded this frame (green), 3 = base
-    // shown because the HD upload was deferred (red). 0 = no replacement / no tint.
+    // 1 = HD active (blue, subtle), 2 = just uploaded this frame (green).
+    // 0 = no replacement / no tint.
     bool mTextureReplacementDebug = false;
     int mDebugTintState = 0;
 
-    // Async texture loading (gEnhancements.Graphics.AsyncTextureLoad). When on (and alt
-    // assets enabled), a texture's HD/replacement resource is decoded on the resource
-    // thread pool while the cheap vanilla version renders; the HD swaps in once its load
-    // finishes ("replaced between frames"), so the render thread never blocks on the decode.
-    bool mAsyncTextureLoad = false;
-    std::unordered_map<std::string, std::shared_future<std::shared_ptr<Ship::IResource>>> mTexFutures;
-    // Textures whose HD version has already been swapped in (uploaded once, now cache-resident);
-    // they bypass the per-frame swap budget so they never flicker back to vanilla.
-    std::unordered_set<std::string> mTexSwappedIn;
+    // HD textures decoding ahead of their first draw, by path, and when they were asked for
+    struct Prefetch {
+        std::shared_future<std::shared_ptr<Ship::IResource>> result;
+        uint64_t frame;
+    };
+    std::unordered_map<std::string, Prefetch> mPrefetches;
     std::unordered_set<std::string> mTexPrefetched; // prefix groups already queued
+    // Groups asked for from other threads, started on the render thread's next frame
+    std::mutex mPrefetchQueueMutex;
+    std::vector<std::string> mPrefetchQueue;
+    void PrefetchGroupNow(const std::string& group);
+    std::shared_ptr<Ship::IResource> LoadReplacement(const std::string& path);
+
+    // Decoded HD textures in memory and when each was last drawn (see HdEvictToBudget)
+    struct HdResident {
+        std::shared_ptr<Ship::IResource> res;
+        size_t bytes = 0;
+        uint64_t lastUsed = 0;
+        std::vector<const void*> drawKeys; // mDrawTextureCache entries that resolve to it
+    };
+    mutable std::unordered_map<const Ship::IResource*, HdResident> mHdResident;
+    mutable size_t mHdResidentBytes = 0;
+    size_t mHdBudgetBytes = 0; // 0 = from system memory
+    uint64_t mHdFrame = 0;
+    void HdTouch(const std::shared_ptr<Ship::IResource>& res, const void* drawKey = nullptr) const;
+    void HdRefreshBytes(const Ship::IResource* res) const;
+    void HdEvictToBudget();
+    size_t HdBudgetBytes() const;
     // Port-supplied: the group prefix to prefetch when a replacement is first requested
     std::function<std::string(const std::string&)> mReplacementGroupOf;
     std::vector<std::string> mAltFiles; // every replacement in the archives, sorted
@@ -930,9 +930,8 @@ class Interpreter {
     bool TileRasterRegion(int tile, RasterRegion& region) const;
     std::shared_ptr<Fast::Texture> VanillaCiSource(int tile, RasterRegion& region) const;
     bool UploadVanillaCi(int tile);
-    // Returns the texture resource to draw with: the resolved HD if its async load is ready,
-    // otherwise the vanilla fallback (kicking the async load on first reference). Falls back
-    // to a plain cached load when async is disabled or alt assets are off.
+    // Returns the texture resource to draw with: the replacement when the pack has one that
+    // fits, a palette variant standing in for it, or else the original.
     std::shared_ptr<Ship::IResource> AcquireDrawTexture(const char* name);
     bool ReplacementFits(const std::shared_ptr<Ship::IResource>& res, const std::string& name);
     void PrefetchReplacementGroup(const std::string& group);

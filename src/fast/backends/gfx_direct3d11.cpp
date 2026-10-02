@@ -1,5 +1,6 @@
 #ifdef ENABLE_DX11
 
+#include <algorithm>
 #include <cstdio>
 #include <vector>
 #include <cmath>
@@ -564,12 +565,40 @@ void GfxRenderingAPIDX11::ShaderGetInfo(struct ShaderProgram* prg, uint8_t* numI
 }
 
 uint32_t GfxRenderingAPIDX11::NewTexture() {
+    if (!mFreeTextureIds.empty()) {
+        const uint32_t id = mFreeTextureIds.back();
+        mFreeTextureIds.pop_back();
+        return id;
+    }
     mTextures.resize(mTextures.size() + 1);
     return (uint32_t)(mTextures.size() - 1);
 }
 
+// D3D keeps the texture alive until the GPU is done with it.
 void GfxRenderingAPIDX11::DeleteTexture(uint32_t texID) {
-    // glDeleteTextures(1, &texID);
+    if (texID >= mTextures.size() ||
+        std::find(mFreeTextureIds.begin(), mFreeTextureIds.end(), texID) != mFreeTextureIds.end()) {
+        return;
+    }
+    mTextures[texID] = TextureData{};
+    mFreeTextureIds.push_back(texID);
+}
+
+// Out of video memory: draw nothing instead of throwing, like the other backends.
+static bool CreateTextureAndView(ID3D11Device* device, const D3D11_TEXTURE2D_DESC& desc,
+                                 const D3D11_SUBRESOURCE_DATA* data, TextureData* texture_data) {
+    HRESULT res = device->CreateTexture2D(&desc, data, texture_data->texture.ReleaseAndGetAddressOf());
+    if (SUCCEEDED(res)) {
+        res = device->CreateShaderResourceView(texture_data->texture.Get(), nullptr,
+                                               texture_data->resource_view.ReleaseAndGetAddressOf());
+    }
+    if (FAILED(res)) {
+        fprintf(stderr, "Couldn't create a %ux%u texture: 0x%08X\n", desc.Width, desc.Height, (unsigned)res);
+        texture_data->texture.Reset();
+        texture_data->resource_view.Reset();
+        return false;
+    }
+    return true;
 }
 
 void GfxRenderingAPIDX11::SelectTexture(int tile, uint32_t texture_id) {
@@ -616,18 +645,14 @@ void GfxRenderingAPIDX11::UploadTexture(const uint8_t* rgba32_buf, uint32_t widt
     resource_data.SysMemPitch = width * 4;
     resource_data.SysMemSlicePitch = resource_data.SysMemPitch * height;
 
-    ThrowIfFailed(
-        mDevice->CreateTexture2D(&texture_desc, &resource_data, texture_data->texture.ReleaseAndGetAddressOf()));
+    if (!CreateTextureAndView(mDevice.Get(), texture_desc, &resource_data, texture_data)) {
+        return;
+    }
     texture_data->mip_levels = 1;
     if (texture_data->auto_mipmaps) {
         texture_data->auto_mipmaps = false;
         SetSamplerParameters(mCurrentTile, texture_data->linear_filtering, texture_data->cms, texture_data->cmt);
     }
-
-    // Create shader resource view from texture
-
-    ThrowIfFailed(mDevice->CreateShaderResourceView(texture_data->texture.Get(), nullptr,
-                                                    texture_data->resource_view.ReleaseAndGetAddressOf()));
 }
 
 void GfxRenderingAPIDX11::UploadTextureMip(const uint8_t* rgba32_buf, uint32_t width, uint32_t height, uint32_t level,
@@ -663,9 +688,7 @@ void GfxRenderingAPIDX11::UploadTextureMip(const uint8_t* rgba32_buf, uint32_t w
         texture_desc.SampleDesc.Count = 1;
         texture_desc.SampleDesc.Quality = 0;
 
-        ThrowIfFailed(mDevice->CreateTexture2D(&texture_desc, nullptr, texture_data->texture.ReleaseAndGetAddressOf()));
-        ThrowIfFailed(mDevice->CreateShaderResourceView(texture_data->texture.Get(), nullptr,
-                                                        texture_data->resource_view.ReleaseAndGetAddressOf()));
+        CreateTextureAndView(mDevice.Get(), texture_desc, nullptr, texture_data);
     }
 
     if (texture_data->texture != nullptr && level < texture_data->mip_levels) {

@@ -343,11 +343,33 @@ void GfxRenderingAPIMetal::ShaderGetInfo(struct ShaderProgram* prg, uint8_t* num
 }
 
 uint32_t GfxRenderingAPIMetal::NewTexture() {
+    if (!mFreeTextureIds.empty()) {
+        const uint32_t id = mFreeTextureIds.back();
+        mFreeTextureIds.pop_back();
+        return id;
+    }
     mTextures.resize(mTextures.size() + 1);
     return (uint32_t)(mTextures.size() - 1);
 }
 
+// Command buffers hold their textures, so the memory frees once those frames finish.
 void GfxRenderingAPIMetal::DeleteTexture(uint32_t texID) {
+    if (texID >= mTextures.size() ||
+        std::find(mFreeTextureIds.begin(), mFreeTextureIds.end(), texID) != mFreeTextureIds.end()) {
+        return;
+    }
+    TextureDataMetal& tex = mTextures[texID];
+    if (tex.texture != nullptr) {
+        tex.texture->release();
+    }
+    if (tex.msaaTexture != nullptr) {
+        tex.msaaTexture->release();
+    }
+    if (tex.sampler != nullptr) {
+        tex.sampler->release();
+    }
+    tex = TextureDataMetal{};
+    mFreeTextureIds.push_back(texID);
 }
 
 void GfxRenderingAPIMetal::SelectTexture(int tile, uint32_t texture_id) {

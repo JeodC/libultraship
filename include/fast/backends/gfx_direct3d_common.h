@@ -192,6 +192,7 @@ class GfxRenderingAPIDX11 final : public GfxRenderingAPI {
     std::unordered_map<std::string, VertexShaderD3D11> mVertexShadersBySource;
 
     std::vector<struct TextureData> mTextures;
+    std::vector<uint32_t> mFreeTextureIds; // deleted slots, reused by NewTexture
     int mCurrentTile;
     uint32_t mCurrentTextureIds[SHADER_MAX_TEXTURES] = {};
 

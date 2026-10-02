@@ -316,6 +316,7 @@ class GfxRenderingAPIVK final : public GfxRenderingAPI {
     std::unordered_map<std::pair<uint64_t, uint64_t>, ShaderProgramVK, vk_hash_pair_shader_ids> mShaderProgramPool;
 
     std::vector<TextureDataVK> mTextures;
+    std::vector<uint32_t> mFreeTextureIds; // deleted slots, reused by NewTexture
     std::vector<FramebufferVK> mFramebuffers;
     std::vector<int> mDrawnFramebuffers;
 

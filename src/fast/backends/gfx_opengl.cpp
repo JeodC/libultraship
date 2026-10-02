@@ -704,6 +704,10 @@ GLuint GfxRenderingAPIOGL::NewTexture() {
 
 void GfxRenderingAPIOGL::DeleteTexture(uint32_t texID) {
     glDeleteTextures(1, &texID);
+    // GL can hand the name out again, so forget its old state.
+    if (texID < textures.size()) {
+        textures[texID] = TextureInfo{};
+    }
 }
 
 void GfxRenderingAPIOGL::SelectTexture(int tile, GLuint texture_id) {

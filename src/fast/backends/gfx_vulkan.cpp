@@ -1276,6 +1276,11 @@ void GfxRenderingAPIVK::ShaderGetInfo(ShaderProgram* prg, uint8_t* numInputs, bo
 }
 
 uint32_t GfxRenderingAPIVK::NewTexture() {
+    if (!mFreeTextureIds.empty()) {
+        const uint32_t id = mFreeTextureIds.back();
+        mFreeTextureIds.pop_back();
+        return id;
+    }
     mTextures.resize(mTextures.size() + 1);
     return (uint32_t)(mTextures.size() - 1);
 }
@@ -1304,10 +1309,15 @@ void GfxRenderingAPIVK::DestroyTextureData(TextureDataVK& tex, bool deferred) {
     tex.memory = VK_NULL_HANDLE;
 }
 
+// Destroyed once the frame that last drew it has finished.
 void GfxRenderingAPIVK::DeleteTexture(uint32_t texId) {
-    if (texId < mTextures.size()) {
-        DestroyTextureData(mTextures[texId], true);
+    if (texId >= mTextures.size() ||
+        std::find(mFreeTextureIds.begin(), mFreeTextureIds.end(), texId) != mFreeTextureIds.end()) {
+        return;
     }
+    DestroyTextureData(mTextures[texId], true);
+    mTextures[texId] = TextureDataVK{};
+    mFreeTextureIds.push_back(texId);
 }
 
 void GfxRenderingAPIVK::SelectTexture(int tile, uint32_t textureId) {
