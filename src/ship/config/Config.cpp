@@ -206,12 +206,16 @@ void Config::Reload() {
     try {
         mNestedJson = nlohmann::json::parse(ifs);
         mFlattenedJson = mNestedJson.flatten();
+        mSavedJson = mFlattenedJson;
     } catch (const nlohmann::json::exception& e) {
         SPDLOG_ERROR("Failed to parse config file {}: {}", mPath, e.what());
     } catch (const std::exception& e) { SPDLOG_ERROR("Unexpected error loading config file {}: {}", mPath, e.what()); }
 }
 
 void Config::Save() {
+    if (mFlattenedJson == mSavedJson) {
+        return;
+    }
     mNestedJson = mFlattenedJson.unflatten();
     const fs::path configPath(mPath);
     const fs::path tempPath = configPath.parent_path() / (configPath.filename().string() + ".tmp");
@@ -236,7 +240,9 @@ void Config::Save() {
         SPDLOG_ERROR("Could not replace config \"{}\": {}", mPath, ec.message());
         std::error_code removeEc;
         fs::remove(tempPath, removeEc);
+        return;
     }
+    mSavedJson = mFlattenedJson;
 }
 
 template <typename T> std::vector<T> Config::GetArray(const std::string& key) {
