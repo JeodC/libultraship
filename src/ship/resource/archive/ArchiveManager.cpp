@@ -248,7 +248,7 @@ std::shared_ptr<Archive> ArchiveManager::AddArchive(const std::string& archivePa
     const std::string extension = path.extension().string();
     std::shared_ptr<Archive> archive = nullptr;
 
-    SPDLOG_INFO("Reading archive: {}", path.string());
+    SPDLOG_DEBUG("Reading archive: {}", path.string());
 
     if (StringHelper::IEquals(extension, ".o2r") || StringHelper::IEquals(extension, ".zip")) {
         archive = dynamic_pointer_cast<Archive>(std::make_shared<O2rArchive>(archivePath));
@@ -280,7 +280,7 @@ std::shared_ptr<Archive> ArchiveManager::AddArchive(std::shared_ptr<Archive> arc
         return nullptr;
     }
 
-    SPDLOG_INFO("Adding Archive {} to Archive Manager", archive->GetPath());
+    SPDLOG_DEBUG("Adding Archive {} to Archive Manager", archive->GetPath());
 
     mArchives.push_back(archive);
     // Index in mArchives is the load-order priority (last added = highest, wins conflicts).
