@@ -489,6 +489,9 @@ void Interpreter::TextureCacheClear() {
 }
 
 void Interpreter::ShaderCacheClear() {
+    mColorCombinerPool.clear();
+    mPrevCombiner = mColorCombinerPool.end();
+    mRenderingState.mShaderProgram = nullptr;
     mRapi->ClearShaderCache();
 }
 
@@ -5502,11 +5505,7 @@ extern "C" void gfx_texture_cache_clear() {
 }
 
 extern "C" void gfx_shader_cache_clear() {
-    auto instance = Fast::mInstance.lock().get();
-    instance->mColorCombinerPool.clear();
-    instance->mPrevCombiner = Fast::mInstance.lock().get()->mColorCombinerPool.end();
-    instance->mRenderingState.mShaderProgram = nullptr;
-    instance->mRapi->ClearShaderCache();
+    Fast::mInstance.lock().get()->ShaderCacheClear();
 }
 
 extern "C" void gfx_register_fb_texture(const void* cpuAddr, int fbId) {

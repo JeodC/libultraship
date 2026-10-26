@@ -390,6 +390,7 @@ void GfxRenderingAPIDX11::LoadShader(struct ShaderProgram* new_prg) {
 void GfxRenderingAPIDX11::ClearShaderCache() {
     mShaderProgramPool.clear();
     mVertexShadersBySource.clear();
+    mLastShaderProgram = nullptr;
 }
 
 struct ShaderProgram* GfxRenderingAPIDX11::CreateAndLoadNewShader(uint64_t shader_id0, uint64_t shader_id1) {

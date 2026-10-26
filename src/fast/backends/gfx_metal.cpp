@@ -212,6 +212,9 @@ void GfxRenderingAPIMetal::ClearShaderCache() {
     for (auto& [key, prg] : mShaderProgramPool) {
         prg.markedForDeletion = true;
     }
+    for (auto& fb : mFramebuffers) {
+        fb.mLastShaderProgram = nullptr;
+    }
 }
 
 struct ShaderProgram* GfxRenderingAPIMetal::CreateAndLoadNewShader(uint64_t shader_id0, uint64_t shader_id1) {

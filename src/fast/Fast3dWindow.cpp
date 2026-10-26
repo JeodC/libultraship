@@ -163,6 +163,7 @@ void Fast3dWindow::InitWindowManager() {
 
 void Fast3dWindow::SetTextureFilter(FilteringMode filteringMode) {
     mInterpreter->GetCurrentRenderingAPI()->SetTextureFilter(filteringMode);
+    mInterpreter->ShaderCacheClear();
 }
 
 void Fast3dWindow::EnableSRGBMode() {

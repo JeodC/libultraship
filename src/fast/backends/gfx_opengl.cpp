@@ -400,6 +400,10 @@ static std::string BuildVsShader(const CCFeatures& cc_features) {
 }
 
 void GfxRenderingAPIOGL::ClearShaderCache() {
+    UnloadShader(mLastLoadedShader);
+    for (auto& [key, prg] : mShaderProgramPool) {
+        glDeleteProgram(prg.openglProgramId);
+    }
     mShaderProgramPool.clear();
 }
 
