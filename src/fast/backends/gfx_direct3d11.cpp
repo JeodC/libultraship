@@ -51,6 +51,8 @@ using namespace Microsoft::WRL; // For ComPtr
 
 namespace Fast {
 
+static constexpr UINT VERTEX_BUFFER_SIZE = 8 * 1024 * 1024; // several frames of vertices between discards
+
 GfxRenderingAPIDX11::~GfxRenderingAPIDX11() {
 }
 
@@ -261,13 +263,14 @@ void GfxRenderingAPIDX11::Init() {
     ZeroMemory(&vertex_buffer_desc, sizeof(D3D11_BUFFER_DESC));
 
     vertex_buffer_desc.Usage = D3D11_USAGE_DYNAMIC;
-    vertex_buffer_desc.ByteWidth = 256 * 32 * 3 * sizeof(float); // Same as buf_vbo size in gfx_pc
+    vertex_buffer_desc.ByteWidth = VERTEX_BUFFER_SIZE;
     vertex_buffer_desc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
     vertex_buffer_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
     vertex_buffer_desc.MiscFlags = 0;
 
     ThrowIfFailed(mDevice->CreateBuffer(&vertex_buffer_desc, nullptr, mVertexBuffer.GetAddressOf()),
                   mWindowBackend->GetWindowHandle(), "Failed to create vertex buffer.");
+    mVertexBufferOffset = VERTEX_BUFFER_SIZE; // so the first batch discards
 
     // Create per-frame constant buffer
 
@@ -817,13 +820,23 @@ void GfxRenderingAPIDX11::DrawTriangles(float buf_vbo[], size_t buf_vbo_len, siz
 
     // Set vertex buffer data
 
+    const uint32_t stride = mShaderProgram->numFloats * sizeof(float);
+    const UINT size = buf_vbo_len * sizeof(float);
+    // Draw takes a vertex index, so each batch starts on a multiple of its stride
+    UINT start = (mVertexBufferOffset + stride - 1) / stride * stride;
+    // Discard only when the ring wraps. A discard per batch, hundreds a frame, made Map stall every few seconds.
+    D3D11_MAP mapType = D3D11_MAP_WRITE_NO_OVERWRITE;
+    if (start + size > VERTEX_BUFFER_SIZE) {
+        start = 0;
+        mapType = D3D11_MAP_WRITE_DISCARD;
+    }
     D3D11_MAPPED_SUBRESOURCE ms;
     ZeroMemory(&ms, sizeof(D3D11_MAPPED_SUBRESOURCE));
-    mContext->Map(mVertexBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &ms);
-    memcpy(ms.pData, buf_vbo, buf_vbo_len * sizeof(float));
+    mContext->Map(mVertexBuffer.Get(), 0, mapType, 0, &ms);
+    memcpy((uint8_t*)ms.pData + start, buf_vbo, size);
     mContext->Unmap(mVertexBuffer.Get(), 0);
+    mVertexBufferOffset = start + size;
 
-    uint32_t stride = mShaderProgram->numFloats * sizeof(float);
     uint32_t offset = 0;
 
     if (mLastVertexBufferStride != stride) {
@@ -848,7 +861,7 @@ void GfxRenderingAPIDX11::DrawTriangles(float buf_vbo[], size_t buf_vbo_len, siz
         mContext->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     }
 
-    mContext->Draw(buf_vbo_num_tris * 3, 0);
+    mContext->Draw(buf_vbo_num_tris * 3, start / stride);
 }
 
 void GfxRenderingAPIDX11::OnResize() {
