@@ -7,7 +7,6 @@
 
 namespace Ship {
 O2rArchive::O2rArchive(const std::string& archivePath) : Archive(archivePath) {
-    mZipArchive = nullptr;
 }
 
 O2rArchive::~O2rArchive() {
@@ -95,15 +94,15 @@ std::shared_ptr<File> O2rArchive::LoadFile(const std::string& filePath) {
 }
 
 bool O2rArchive::Open() {
-    mZipArchive = zip_open(GetPath().c_str(), ZIP_CREATE, nullptr);
-    if (mZipArchive == nullptr) {
+    zip_t* zipArchive = zip_open(GetPath().c_str(), ZIP_CREATE, nullptr);
+    if (zipArchive == nullptr) {
         SPDLOG_ERROR("Failed to load zip file \"{}\"", GetPath());
         return false;
     }
 
-    auto zipNumEntries = zip_get_num_entries(mZipArchive, 0);
+    auto zipNumEntries = zip_get_num_entries(zipArchive, 0);
     for (auto i = 0; i < zipNumEntries; i++) {
-        auto zipEntryName = zip_get_name(mZipArchive, i, 0);
+        auto zipEntryName = zip_get_name(zipArchive, i, 0);
 
         // It is possible for directories to have entries in a zip
         // file, we don't want those indexed as files in the archive
@@ -114,19 +113,13 @@ bool O2rArchive::Open() {
         IndexFile(zipEntryName);
     }
 
+    // The first read reuses this handle, so opening an archive parses its file list once
+    ReleaseZipHandle(zipArchive);
     return true;
 }
 
 bool O2rArchive::Close() {
     bool success = true;
-
-    if (mZipArchive != nullptr) {
-        if (zip_close(mZipArchive) == -1) {
-            SPDLOG_ERROR("Failed to close zip file \"{}\"", GetPath());
-            success = false;
-        }
-        mZipArchive = nullptr;
-    }
 
     std::lock_guard<std::mutex> lock(mPoolMutex);
     for (auto* handle : mZipArchivePool) {
@@ -141,31 +134,39 @@ bool O2rArchive::Close() {
 }
 
 bool O2rArchive::WriteFile(const std::string& filePath, const std::vector<uint8_t>& data) {
-    if (!mZipArchive) {
+    if (!IsLoaded()) {
         SPDLOG_ERROR("Cannot write to zip: Archive is not open.");
         return false;
     }
 
+    zip_t* zipArchive = zip_open(GetPath().c_str(), ZIP_CREATE, nullptr);
+    if (zipArchive == nullptr) {
+        SPDLOG_ERROR("Failed to open zip file \"{}\" for writing", GetPath());
+        return false;
+    }
+
     // Create a new zip source from the data buffer
-    zip_source_t* source = zip_source_buffer(mZipArchive, data.data(), data.size(), 0);
+    zip_source_t* source = zip_source_buffer(zipArchive, data.data(), data.size(), 0);
     if (!source) {
         SPDLOG_ERROR("Failed to create zip source for file \"{}\"", filePath);
+        zip_discard(zipArchive);
         return false;
     }
 
     // Add or replace the file in the zip archive
-    if (zip_file_add(mZipArchive, filePath.c_str(), source, ZIP_FL_ENC_UTF_8 | ZIP_FL_OVERWRITE) < 0) {
+    if (zip_file_add(zipArchive, filePath.c_str(), source, ZIP_FL_ENC_UTF_8 | ZIP_FL_OVERWRITE) < 0) {
         SPDLOG_ERROR("Failed to add file \"{}\" to ZIP", filePath);
         zip_source_free(source);
+        zip_discard(zipArchive);
         return false;
     }
 
     // Save changes to disk
-    if (zip_close(mZipArchive) < 0) {
-        zip_error_t* error = zip_get_error(mZipArchive);
+    if (zip_close(zipArchive) < 0) {
+        zip_error_t* error = zip_get_error(zipArchive);
         SPDLOG_ERROR("Failed to save changes to zip archive: {} ({})", zip_error_strerror(error),
                      zip_error_code_zip(error));
-        zip_discard(mZipArchive); // Close zip and discard changes
+        zip_discard(zipArchive); // Close zip and discard changes
         return false;
     }
 
@@ -179,13 +180,6 @@ bool O2rArchive::WriteFile(const std::string& filePath, const std::vector<uint8_
     }
 
     SPDLOG_INFO("Successfully wrote file: {}", filePath);
-
-    // Reopen the zip file so that it may continued to be used by libultraship
-    mZipArchive = zip_open(GetPath().c_str(), ZIP_CREATE, nullptr);
-    if (mZipArchive == nullptr) {
-        SPDLOG_ERROR("Failed to reopen zip file after writing.");
-        return false;
-    }
 
     IndexFile(filePath);
 
