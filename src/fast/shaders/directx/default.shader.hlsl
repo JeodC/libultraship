@@ -98,10 +98,35 @@ float4 tex2D3PointFilter(in Texture2D tex, in SamplerState tSampler, in float2 t
 }
 @end
 
-@if(o_prim_depth)
+@if(o_prim_depth || o_mip_lod)
 cbuffer PerPrimDepthCB : register(b2) {
     float prim_depth;
-    float3 _pad; // pad to 16-byte cbuffer alignment
+    float lod_max;
+    float2 _pad;
+    float4 lod_params;
+}
+@end
+
+@if(o_mip_lod)
+@if(o_three_point_filtering)
+float4 tex2D3PointFilterLod(in Texture2D tex, in SamplerState tSampler, in float2 texCoord, in float2 texSize, in float lod) {
+    float2 size = max(floor(texSize / exp2(lod)), float2(1.0, 1.0));
+    float2 offset = frac(texCoord * size - float2(0.5, 0.5));
+    offset -= step(1.0, offset.x + offset.y);
+    float4 c0 = tex.SampleLevel(tSampler, texCoord - offset / size, lod);
+    float4 c1 = tex.SampleLevel(tSampler, texCoord - float2(offset.x - sign(offset.x), offset.y) / size, lod);
+    float4 c2 = tex.SampleLevel(tSampler, texCoord - float2(offset.x, offset.y - sign(offset.y)) / size, lod);
+    return c0 + abs(offset.x)*(c1-c0) + abs(offset.y)*(c2-c0);
+}
+@end
+
+float4 SampleTexel0Lod(in float2 tc, in float lod) {
+@if(o_three_point_filtering)
+    if (textures[0].linear_filtering) {
+        return tex2D3PointFilterLod(g_texture0, g_sampler0, tc, float2(textures[0].width, textures[0].height), lod);
+    }
+@end
+    return g_texture0.SampleLevel(g_sampler0, tc, lod);
 }
 @end
 
@@ -195,6 +220,34 @@ struct PSOutput {
 };
 
 PSOutput PSMain(PSInput input, float4 screenSpace : SV_Position) {
+    @if(o_mip_lod)
+        float2 lodStep = max(abs(ddx(input.uv0)), abs(ddy(input.uv0))) * lod_params.xy;
+        float lodMaxDst = max(max(lodStep.x, lodStep.y), 0.000001);
+        if (lod_params.w > 0.5) {
+            lodMaxDst = max(lodMaxDst, lod_params.z);
+        }
+        float lodTileBase = floor(log2(lodMaxDst));
+        float lodFrac = lodMaxDst / exp2(max(lodTileBase, 0.0)) - 1.0;
+        if (lod_params.w > 0.5 && lod_params.w < 1.5 && lodMaxDst < 1.0) {
+            lodFrac = lodMaxDst - 1.0;
+        }
+        if (lod_params.w > 1.5) {
+            if (lodFrac < 0.0) {
+                lodFrac = lodMaxDst;
+            }
+            lodTileBase += 1.0;
+        } else if (lodTileBase >= lod_max) {
+            lodFrac = 1.0;
+        }
+        if (lod_params.w > 0.5) {
+            lodTileBase = max(lodTileBase, 0.0);
+        } else {
+            lodFrac = max(lodFrac, 0.0);
+        }
+        float lodTile0 = clamp(lodTileBase, 0.0, lod_max);
+        float lodTile1 = clamp(lodTileBase + 1.0, 0.0, lod_max);
+    @end
+
     @for(i in 0..2)
         @if(o_textures[i])
             float2 tc@{i} = input.uv@{i};
@@ -212,7 +265,17 @@ PSOutput PSMain(PSInput input, float4 screenSpace : SV_Position) {
                 @end
             @end
 
-            @if(o_three_point_filtering)
+            @if(i == 0 && o_mip_lod)
+                float4 texVal0 = SampleTexel0Lod(tc0, lodTile0);
+                @if(o_masks[0])
+                    @if(o_blend[0])
+                        float4 blendVal0 = g_textureBlend0.Sample(g_sampler0, tc0);
+                    @else
+                        float4 blendVal0 = float4(0, 0, 0, 0);
+                    @end
+                    texVal0 = lerp(texVal0, blendVal0, g_textureMask0.Sample(g_sampler0, tc0).a);
+                @end
+            @elseif(o_three_point_filtering)
                 float4 texVal@{i};
                 if (textures[@{i}].linear_filtering) {
                     @if(o_masks[i])
@@ -253,6 +316,10 @@ PSOutput PSMain(PSInput input, float4 screenSpace : SV_Position) {
                 @end
             @end
         @end
+    @end
+
+    @if(o_mip_lod)
+        float4 texVal1 = SampleTexel0Lod(tc0, lodTile1);
     @end
 
     @if(o_alpha) 

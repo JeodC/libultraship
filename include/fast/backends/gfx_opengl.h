@@ -36,6 +36,8 @@ struct ShaderProgram {
     GLint frameCountLocation;
     GLint noiseScaleLocation;
     GLint prim_depth_location;
+    GLint lod_params_location;
+    GLint lod_max_location;
     GLint texture_width_location;
     GLint texture_height_location;
     GLint texture_filtering_location;
@@ -54,6 +56,7 @@ struct TextureInfo {
     uint16_t width;
     uint16_t height;
     uint16_t filtering;
+    uint8_t mip_levels;
 };
 
 class GfxRenderingAPIOGL final : public GfxRenderingAPI {
@@ -71,6 +74,11 @@ class GfxRenderingAPIOGL final : public GfxRenderingAPI {
     uint32_t NewTexture() override;
     void SelectTexture(int tile, uint32_t textureId) override;
     void UploadTexture(const uint8_t* rgba32Buf, uint32_t width, uint32_t height) override;
+    void UploadTextureMip(const uint8_t* rgba32Buf, uint32_t width, uint32_t height, uint32_t level,
+                          uint32_t totalLevels) override;
+    bool SupportsMipmaps() const override {
+        return true;
+    }
     void SetSamplerParameters(int sampler, bool linear_filter, uint32_t cms, uint32_t cmt) override;
     void SetDepthTestAndMask(bool depth_test, bool z_upd) override;
     void SetCurrentPrimDepth(float depth) override;

@@ -42,6 +42,15 @@ class GfxRenderingAPI {
     virtual uint32_t NewTexture() = 0;
     virtual void SelectTexture(int tile, uint32_t textureId) = 0;
     virtual void UploadTexture(const uint8_t* rgba32Buf, uint32_t width, uint32_t height) = 0;
+    virtual void UploadTextureMip(const uint8_t* rgba32Buf, uint32_t width, uint32_t height, uint32_t level,
+                                  uint32_t totalLevels) {
+        if (level == 0) {
+            UploadTexture(rgba32Buf, width, height);
+        }
+    }
+    virtual bool SupportsMipmaps() const {
+        return false;
+    }
     virtual void SetSamplerParameters(int sampler, bool linear_filter, uint32_t cms, uint32_t cmt) = 0;
     virtual void SetDepthTestAndMask(bool depth_test, bool z_upd) = 0;
     virtual void SetZmodeDecal(bool decal) = 0;
@@ -79,6 +88,13 @@ class GfxRenderingAPI {
     virtual void SetSrgbMode() = 0;
     virtual ImTextureID GetTextureById(int id) = 0;
     virtual void SetCurrentPrimDepth(float depth) = 0;
+    virtual void SetCurrentLod(const float params[4], float maxLod) {
+        for (int i = 0; i < 4; i++) {
+            mCurrentLodParams[i] = params[i];
+        }
+        mCurrentMaxLod = maxLod;
+        mLodDirty = true;
+    }
 
   protected:
     int8_t mCurrentDepthTest = 0;
@@ -90,5 +106,8 @@ class GfxRenderingAPI {
     bool mSrgbMode = false;
     float mCurrentPrimDepth = 0.0f;
     bool mPrimDepthDirty = true;
+    float mCurrentLodParams[4] = {};
+    float mCurrentMaxLod = 0.0f;
+    bool mLodDirty = true;
 };
 } // namespace Fast

@@ -11,8 +11,12 @@ struct FrameUniforms {
 
 struct DrawUniforms {
     int textureFiltering[6];
-    @if(o_prim_depth)
+    @if(o_prim_depth || o_mip_lod)
     float prim_depth;
+    @end
+    @if(o_mip_lod)
+    float4 lod_params;
+    float lod_max;
     @end
 };
 
@@ -155,6 +159,27 @@ float4 hookTexture2D(thread const texture2d<float> tex, thread const sampler tex
     return tex.sample(texSmplr, uv);
 }
 
+@if(o_mip_lod)
+float4 filter3pointLod(thread const texture2d<float> tex, thread const sampler texSmplr, thread const float2& texCoord, thread const float2& texSize, thread const float lod) {
+    float2 size = max(floor(texSize / exp2(lod)), float2(1.0));
+    float2 offset = fract((texCoord * size) - float2(0.5));
+    offset -= float2(step(1.0, offset.x + offset.y));
+    float4 c0 = tex.sample(texSmplr, texCoord - offset / size, level(lod));
+    float4 c1 = tex.sample(texSmplr, texCoord - float2(offset.x - sign(offset.x), offset.y) / size, level(lod));
+    float4 c2 = tex.sample(texSmplr, texCoord - float2(offset.x, offset.y - sign(offset.y)) / size, level(lod));
+    return c0 + abs(offset.x) * (c1 - c0) + abs(offset.y) * (c2 - c0);
+}
+
+float4 hookTextureLod(thread const texture2d<float> tex, thread const sampler texSmplr, thread const float2& uv, thread const float2& texSize, thread const int filtering, thread const float lod) {
+@if(o_three_point_filtering)
+    if(filtering == @{FILTER_THREE_POINT}) {
+        return filter3pointLod(tex, texSmplr, uv, texSize, lod);
+    }
+@end
+    return tex.sample(texSmplr, uv, level(lod));
+}
+@end
+
 float random(float3 value) {
     float random = dot(sin(value), float3(12.9898, 78.233, 37.719));
     return fract(sin(random) * 143758.5453);
@@ -183,6 +208,34 @@ fragment FragOut fragmentShader(
     , texture2d<float> uTexBlend1 [[texture(5)]]
 @end
 ) {
+    @if(o_mip_lod)
+        float2 lodStep = max(abs(dfdx(in.texCoord0)), abs(dfdy(in.texCoord0))) * drawUniforms.lod_params.xy;
+        float lodMaxDst = max(max(lodStep.x, lodStep.y), 0.000001);
+        if (drawUniforms.lod_params.w > 0.5) {
+            lodMaxDst = max(lodMaxDst, drawUniforms.lod_params.z);
+        }
+        float lodTileBase = floor(log2(lodMaxDst));
+        float lodFrac = lodMaxDst / exp2(max(lodTileBase, 0.0)) - 1.0;
+        if (drawUniforms.lod_params.w > 0.5 && drawUniforms.lod_params.w < 1.5 && lodMaxDst < 1.0) {
+            lodFrac = lodMaxDst - 1.0;
+        }
+        if (drawUniforms.lod_params.w > 1.5) {
+            if (lodFrac < 0.0) {
+                lodFrac = lodMaxDst;
+            }
+            lodTileBase += 1.0;
+        } else if (lodTileBase >= drawUniforms.lod_max) {
+            lodFrac = 1.0;
+        }
+        if (drawUniforms.lod_params.w > 0.5) {
+            lodTileBase = max(lodTileBase, 0.0);
+        } else {
+            lodFrac = max(lodFrac, 0.0);
+        }
+        float lodTile0 = clamp(lodTileBase, 0.0, drawUniforms.lod_max);
+        float lodTile1 = clamp(lodTileBase + 1.0, 0.0, drawUniforms.lod_max);
+    @end
+
     @for(i in 0..2)
         @if(o_textures[i])
             @{s = o_clamp[i][0]}
@@ -200,7 +253,11 @@ fragment FragOut fragmentShader(
                 @end
             @end
 
-            float4 texVal@{i} = hookTexture2D(uTex@{i}, uTex@{i}Smplr, vTexCoordAdj@{i}, texSize@{i}, drawUniforms.textureFiltering[@{i}]);
+            @if(i == 0 && o_mip_lod)
+                float4 texVal0 = hookTextureLod(uTex0, uTex0Smplr, vTexCoordAdj0, texSize0, drawUniforms.textureFiltering[0], lodTile0);
+            @else
+                float4 texVal@{i} = hookTexture2D(uTex@{i}, uTex@{i}Smplr, vTexCoordAdj@{i}, texSize@{i}, drawUniforms.textureFiltering[@{i}]);
+            @end
 
             @if(o_masks[i])
                 float2 maskSize@{i} = float2(uTexMask@{i}.get_width(), uTexMask@{i}.get_height());
@@ -214,6 +271,10 @@ fragment FragOut fragmentShader(
                 texVal@{i} = mix(texVal@{i}, blendVal@{i}, maskVal@{i}.w);
             @end
         @end
+    @end
+
+    @if(o_mip_lod)
+        float4 texVal1 = hookTextureLod(uTex0, uTex0Smplr, vTexCoordAdj0, texSize0, drawUniforms.textureFiltering[0], lodTile1);
     @end
     
     @if(o_alpha)

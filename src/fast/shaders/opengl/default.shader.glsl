@@ -125,6 +125,11 @@
     uniform float prim_depth;
     @end
 
+    @if(o_mip_lod)
+    uniform vec4 uLodParams;
+    uniform float lod_max;
+    @end
+
     uniform int texture_width[2];
     uniform int texture_height[2];
     uniform int texture_filtering[2];
@@ -162,9 +167,58 @@
         return @{texture}(tex, uv);
     }
 
+    @if(o_mip_lod)
+    vec4 filter3pointLod(in sampler2D tex, in vec2 texCoord, in vec2 texSize, in float lod) {
+        vec2 size = max(floor(texSize / exp2(lod)), vec2(1.0));
+        vec2 offset = fract(texCoord*size - vec2(0.5));
+        offset -= step(1.0, offset.x + offset.y);
+        vec4 c0 = textureLod(tex, texCoord - offset / size, lod);
+        vec4 c1 = textureLod(tex, texCoord - vec2(offset.x - sign(offset.x), offset.y) / size, lod);
+        vec4 c2 = textureLod(tex, texCoord - vec2(offset.x, offset.y - sign(offset.y)) / size, lod);
+        return c0 + abs(offset.x)*(c1-c0) + abs(offset.y)*(c2-c0);
+    }
+
+    vec4 hookTextureLod(in int id, sampler2D tex, in vec2 uv, in vec2 texSize, in float lod) {
+    @if(o_three_point_filtering)
+        if(texture_filtering[id] == @{FILTER_THREE_POINT}) {
+            return filter3pointLod(tex, uv, texSize, lod);
+        }
+    @end
+        return textureLod(tex, uv, lod);
+    }
+    @end
+
     #define TEX_SIZE(tex) vec2(texture_width[tex], texture_height[tex])
 
     void main() {
+        @if(o_mip_lod)
+            vec2 lodStep = max(abs(dFdx(vTexCoord0)), abs(dFdy(vTexCoord0))) * uLodParams.xy;
+            float lodMaxDst = max(max(lodStep.x, lodStep.y), 0.000001);
+            if (uLodParams.w > 0.5) {
+                lodMaxDst = max(lodMaxDst, uLodParams.z);
+            }
+            float lodTileBase = floor(log2(lodMaxDst));
+            float lodFrac = lodMaxDst / exp2(max(lodTileBase, 0.0)) - 1.0;
+            if (uLodParams.w > 0.5 && uLodParams.w < 1.5 && lodMaxDst < 1.0) {
+                lodFrac = lodMaxDst - 1.0;
+            }
+            if (uLodParams.w > 1.5) {
+                if (lodFrac < 0.0) {
+                    lodFrac = lodMaxDst;
+                }
+                lodTileBase += 1.0;
+            } else if (lodTileBase >= lod_max) {
+                lodFrac = 1.0;
+            }
+            if (uLodParams.w > 0.5) {
+                lodTileBase = max(lodTileBase, 0.0);
+            } else {
+                lodFrac = max(lodFrac, 0.0);
+            }
+            float lodTile0 = clamp(lodTileBase, 0.0, lod_max);
+            float lodTile1 = clamp(lodTileBase + 1.0, 0.0, lod_max);
+        @end
+
         @for(i in 0..2)
             @if(o_textures[i])
                 @{s = o_clamp[i][0]}
@@ -184,7 +238,11 @@
                     @end
                 @end
 
-                vec4 texVal@{i} = hookTexture2D(@{i}, uTex@{i}, vTexCoordAdj@{i}, texSize@{i});
+                @if(i == 0 && o_mip_lod)
+                    vec4 texVal0 = hookTextureLod(0, uTex0, vTexCoordAdj0, texSize0, lodTile0);
+                @else
+                    vec4 texVal@{i} = hookTexture2D(@{i}, uTex@{i}, vTexCoordAdj@{i}, texSize@{i});
+                @end
 
                 @if(o_masks[i])
                     @if(opengles) 
@@ -204,6 +262,10 @@
                     texVal@{i} = mix(texVal@{i}, blendVal@{i}, maskVal@{i}.a);
                 @end
             @end
+        @end
+
+        @if(o_mip_lod)
+            vec4 texVal1 = hookTextureLod(0, uTex0, vTexCoordAdj0, texSize0, lodTile1);
         @end
 
         @if(o_alpha) 

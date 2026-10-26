@@ -30,7 +30,9 @@ struct PerDrawCB {
 
 struct PerPrimDepthCB {
     float prim_depth;
-    float _pad[3]; // 16-byte CB alignment
+    float lod_max;
+    float _pad[2];       // 16-byte CB alignment
+    float lod_params[4]; // SetCurrentLod's params
 };
 
 struct Coord {
@@ -44,6 +46,7 @@ struct TextureData {
     uint32_t width;
     uint32_t height;
     bool linear_filtering;
+    uint32_t mip_levels;
 };
 
 struct FramebufferDX11 {
@@ -87,6 +90,11 @@ class GfxRenderingAPIDX11 final : public GfxRenderingAPI {
     uint32_t NewTexture() override;
     void SelectTexture(int tile, uint32_t textureId) override;
     void UploadTexture(const uint8_t* rgba32Buf, uint32_t width, uint32_t height) override;
+    void UploadTextureMip(const uint8_t* rgba32Buf, uint32_t width, uint32_t height, uint32_t level,
+                          uint32_t totalLevels) override;
+    bool SupportsMipmaps() const override {
+        return true;
+    }
     void SetSamplerParameters(int sampler, bool linear_filter, uint32_t cms, uint32_t cmt) override;
     void SetDepthTestAndMask(bool depth_test, bool z_upd) override;
     void SetCurrentPrimDepth(float depth) override;

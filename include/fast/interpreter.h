@@ -58,7 +58,8 @@ enum {
     SHADER_TEXEL1A,
     SHADER_1,
     SHADER_COMBINED,
-    SHADER_NOISE
+    SHADER_NOISE,
+    SHADER_LOD_FRAC
 };
 
 #ifdef __cplusplus
@@ -80,6 +81,7 @@ enum class ShaderOpts {
     TEXEL0_BLEND,
     TEXEL1_BLEND,
     PRIM_DEPTH,
+    MIP_LOD,      // TEXEL1 is TEXEL0's next mip level
     PRISM_SHADER, // 16-bit width
     MAX
 };
@@ -113,6 +115,7 @@ struct CCFeatures {
     bool opt_invisible;
     bool opt_grayscale;
     bool opt_prim_depth;
+    bool opt_mip_lod;
     bool usedTextures[2];
     bool used_masks[2];
     bool used_blend[2];
@@ -135,8 +138,8 @@ class GfxRenderingAPI;
 class GfxWindowBackend;
 
 constexpr size_t MAX_SEGMENT_POINTERS = 16;
-constexpr size_t SHADER_ID_SHIFT = 17;
-constexpr int16_t ShaderIdUnmask(int id) {
+constexpr size_t SHADER_ID_SHIFT = 18;
+constexpr int16_t ShaderIdUnmask(uint64_t id) {
     return (id >> SHADER_ID_SHIFT) & 0xFFFF;
 }
 
@@ -184,6 +187,7 @@ struct TextureCacheKey {
     uint8_t fmt, siz;
     uint8_t palette_index;
     uint32_t size_bytes;
+    uint8_t mip_levels;
 
     bool operator==(const TextureCacheKey&) const noexcept = default;
 
@@ -255,6 +259,8 @@ struct RSP {
         uint16_t s, t;
     } texture_scaling_factor;
 
+    uint8_t texture_level; // gsSPTexture's highest mip level
+
     struct LoadedVertex loaded_vertices[MAX_VERTICES + 4];
 };
 
@@ -299,6 +305,17 @@ struct RDP {
     } texture_tile[8];
     bool textures_changed[2];
 
+    static constexpr size_t TMEM_JOURNAL_SIZE = 32;
+    struct TmemLoadEntry {
+        uint16_t tmem_word;
+        uint16_t size_words;
+        const uint8_t* dram_addr;
+        uint32_t data_bytes;
+        bool linear;
+        bool replaced;
+    } tmem_loads[TMEM_JOURNAL_SIZE];
+    uint8_t tmem_load_head;
+
     uint8_t first_tile_index;
 
     uint32_t other_mode_l, other_mode_h;
@@ -306,6 +323,7 @@ struct RDP {
     bool grayscale;
 
     uint8_t prim_lod_fraction;
+    uint8_t prim_lod_min;
     uint16_t prim_depth;
     struct RGBA env_color, prim_color, fog_color, blend_color, fill_color, grayscale_color;
 
@@ -434,6 +452,10 @@ class Interpreter {
     void ImportTextureCi8(int tile, bool importReplacement);
     void ImportTextureRaw(int tile, bool importReplacement);
     void ImportTextureImg(int tile, bool importReplacement);
+    const RDP::TmemLoadEntry* FindTmemLoad(uint16_t tmemWord) const;
+    uint8_t DetectMipChain(uint32_t baseTile) const;
+    void UploadBaseTexture(const uint8_t* rgba32Buf, uint32_t width, uint32_t height);
+    void UploadMipChain(uint32_t baseTile, uint32_t baseWidth, uint32_t baseHeight);
     void ImportTexture(int i, int tile, bool importReplacement);
     void ImportTextureMask(int i, int tile);
     void CalculateNormalDir(const F3DLight_t*, float coeffs[3]);
@@ -441,6 +463,7 @@ class Interpreter {
     // pointer and dropped with the texture cache. Safe for ports whose display
     // lists carry stable path pointers; off by default.
     void SetResolvedResourceCacheEnabled(bool enabled);
+    void SetMipmapsEnabled(bool enabled);
 
     void GfxSpMatrix(uint8_t params, const int32_t* addr);
     void GfxSpPopMatrix(uint32_t count);
@@ -512,6 +535,20 @@ class Interpreter {
     std::map<ColorCombinerKey, ColorCombiner> mColorCombinerPool; // color_combiner_pool;
     std::map<ColorCombinerKey, ColorCombiner>::iterator mPrevCombiner = mColorCombinerPool.end();
     uint8_t* mTexUploadBuffer = nullptr;
+
+    bool mMipmapsEnabled = true;
+    uint8_t mCurrentMipExtraLevels{};
+    uint32_t mImportTile = 0;
+    std::vector<uint8_t> mMipDecodeBuffer;
+    std::vector<uint8_t> mMipLevelBuffer;
+    float mLodParams[4]{};
+    float mLodMax{};
+    uint32_t mTileState{};
+    struct {
+        uint32_t tileState = UINT32_MAX;
+        uint32_t modeH;
+        uint8_t baseTile, level, levels;
+    } mMipChain;
 
     GfxDimensions mGfxCurrentWindowDimensions{}; // gfx_current_window_dimensions;
     int32_t mCurWindowPosX{};

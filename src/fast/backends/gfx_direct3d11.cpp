@@ -641,6 +641,40 @@ void GfxRenderingAPIDX11::UploadTexture(const uint8_t* rgba32_buf, uint32_t widt
                                                     texture_data->resource_view.ReleaseAndGetAddressOf()));
 }
 
+void GfxRenderingAPIDX11::UploadTextureMip(const uint8_t* rgba32_buf, uint32_t width, uint32_t height, uint32_t level,
+                                           uint32_t totalLevels) {
+    if (width == 0 || height == 0) {
+        return;
+    }
+
+    TextureData* texture_data = &mTextures[mCurrentTextureIds[mCurrentTile]];
+    if (level == 0) {
+        texture_data->width = width;
+        texture_data->height = height;
+        texture_data->mip_levels = totalLevels;
+
+        // The levels arrive one at a time, so the texture can't be immutable
+        D3D11_TEXTURE2D_DESC texture_desc;
+        ZeroMemory(&texture_desc, sizeof(D3D11_TEXTURE2D_DESC));
+        texture_desc.Width = width;
+        texture_desc.Height = height;
+        texture_desc.Usage = D3D11_USAGE_DEFAULT;
+        texture_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        texture_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        texture_desc.ArraySize = 1;
+        texture_desc.MipLevels = totalLevels;
+        texture_desc.SampleDesc.Count = 1;
+
+        ThrowIfFailed(mDevice->CreateTexture2D(&texture_desc, nullptr, texture_data->texture.ReleaseAndGetAddressOf()));
+        ThrowIfFailed(mDevice->CreateShaderResourceView(texture_data->texture.Get(), nullptr,
+                                                        texture_data->resource_view.ReleaseAndGetAddressOf()));
+    }
+
+    if (texture_data->texture != nullptr && level < texture_data->mip_levels) {
+        mContext->UpdateSubresource(texture_data->texture.Get(), level, nullptr, rgba32_buf, width * 4, 0);
+    }
+}
+
 void GfxRenderingAPIDX11::SetSamplerParameters(int tile, bool linear_filter, uint32_t cms, uint32_t cmt) {
     D3D11_SAMPLER_DESC sampler_desc;
     ZeroMemory(&sampler_desc, sizeof(D3D11_SAMPLER_DESC));
@@ -808,15 +842,18 @@ void GfxRenderingAPIDX11::DrawTriangles(float buf_vbo[], size_t buf_vbo_len, siz
         mContext->Unmap(mPerDrawCb.Get(), 0);
     }
 
-    // G_ZS_PRIM: upload prim_depth cbuffer when it changed
-    if (mPrimDepthDirty) {
+    // G_ZS_PRIM and texture LOD: upload the cbuffer when either changed
+    if (mPrimDepthDirty || mLodDirty) {
         mPerPrimDepthCbData.prim_depth = mCurrentPrimDepth;
+        mPerPrimDepthCbData.lod_max = mCurrentMaxLod;
+        memcpy(mPerPrimDepthCbData.lod_params, mCurrentLodParams, sizeof(mCurrentLodParams));
         D3D11_MAPPED_SUBRESOURCE ms;
         ZeroMemory(&ms, sizeof(D3D11_MAPPED_SUBRESOURCE));
         mContext->Map(mPerPrimDepthCb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &ms);
         memcpy(ms.pData, &mPerPrimDepthCbData, sizeof(PerPrimDepthCB));
         mContext->Unmap(mPerPrimDepthCb.Get(), 0);
         mPrimDepthDirty = false;
+        mLodDirty = false;
     }
 
     // Set vertex buffer data
@@ -1335,6 +1372,10 @@ static const char* prism_shader_item_to_str(uint32_t item, bool with_alpha, bool
             case SHADER_NOISE:
                 return with_alpha ? "float4(" RAND_NOISE ", " RAND_NOISE ", " RAND_NOISE ", " RAND_NOISE ")"
                                   : "float3(" RAND_NOISE ", " RAND_NOISE ", " RAND_NOISE ")";
+            case SHADER_LOD_FRAC:
+                return hint_single_element ? "lodFrac"
+                                           : (with_alpha ? "float4(lodFrac, lodFrac, lodFrac, lodFrac)"
+                                                         : "float3(lodFrac, lodFrac, lodFrac)");
         }
     } else {
         switch (item) {
@@ -1363,6 +1404,8 @@ static const char* prism_shader_item_to_str(uint32_t item, bool with_alpha, bool
                 return "texel.a";
             case SHADER_NOISE:
                 return RAND_NOISE;
+            case SHADER_LOD_FRAC:
+                return "lodFrac";
         }
     }
 }
@@ -1460,6 +1503,7 @@ std::string gfx_direct3d_common_build_shader(size_t& numFloats, const CCFeatures
         { "SHADER_1", SHADER_1 },
         { "SHADER_COMBINED", SHADER_COMBINED },
         { "SHADER_NOISE", SHADER_NOISE },
+        { "SHADER_LOD_FRAC", SHADER_LOD_FRAC },
         { "o_c", M_ARRAY(cc_features.c, int, 2, 2, 4) },
         { "o_alpha", cc_features.opt_alpha },
         { "o_fog", cc_features.opt_fog },
@@ -1470,6 +1514,7 @@ std::string gfx_direct3d_common_build_shader(size_t& numFloats, const CCFeatures
         { "o_invisible", cc_features.opt_invisible },
         { "o_grayscale", cc_features.opt_grayscale },
         { "o_prim_depth", cc_features.opt_prim_depth },
+        { "o_mip_lod", cc_features.opt_mip_lod },
         { "o_textures", M_ARRAY(cc_features.usedTextures, bool, 2) },
         { "o_masks", M_ARRAY(cc_features.used_masks, bool, 2) },
         { "o_blend", M_ARRAY(cc_features.used_blend, bool, 2) },

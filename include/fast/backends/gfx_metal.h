@@ -78,6 +78,7 @@ struct TextureDataMetal {
     uint32_t height;
     uint32_t filtering;
     bool linear_filtering;
+    uint32_t mip_levels;
 };
 
 struct FramebufferMetal {
@@ -120,6 +121,8 @@ struct FrameUniforms {
 struct DrawUniforms {
     simd::int1 textureFiltering[SHADER_MAX_TEXTURES];
     simd::float1 prim_depth;
+    simd::float4 lod_params;
+    simd::float1 lod_max;
 };
 
 struct CoordUniforms {
@@ -141,6 +144,11 @@ class GfxRenderingAPIMetal final : public GfxRenderingAPI {
     uint32_t NewTexture() override;
     void SelectTexture(int tile, uint32_t textureId) override;
     void UploadTexture(const uint8_t* rgba32Buf, uint32_t width, uint32_t height) override;
+    void UploadTextureMip(const uint8_t* rgba32Buf, uint32_t width, uint32_t height, uint32_t level,
+                          uint32_t totalLevels) override;
+    bool SupportsMipmaps() const override {
+        return true;
+    }
     void SetSamplerParameters(int sampler, bool linear_filter, uint32_t cms, uint32_t cmt) override;
     void SetDepthTestAndMask(bool depth_test, bool z_upd) override;
     void SetCurrentPrimDepth(float depth) override;

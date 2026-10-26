@@ -63,6 +63,10 @@ void GfxRenderingAPIOGL::SetUniforms(ShaderProgram* prg) const {
 
 void GfxRenderingAPIOGL::SetPerDrawUniforms() {
     glUniform1f(mCurrentShaderProgram->prim_depth_location, mCurrentPrimDepth);
+    if (mCurrentShaderProgram->lod_params_location >= 0) {
+        glUniform4fv(mCurrentShaderProgram->lod_params_location, 1, mCurrentLodParams);
+        glUniform1f(mCurrentShaderProgram->lod_max_location, mCurrentMaxLod);
+    }
 
     if (mCurrentShaderProgram->usedTextures[0] || mCurrentShaderProgram->usedTextures[1]) {
         GLint filtering[2] = { textures[mCurrentTextureIds[0]].filtering, textures[mCurrentTextureIds[1]].filtering };
@@ -143,6 +147,10 @@ static const char* shader_item_to_str(uint32_t item, bool with_alpha, bool only_
             case SHADER_NOISE:
                 return with_alpha ? "vec4(" RAND_NOISE ", " RAND_NOISE ", " RAND_NOISE ", " RAND_NOISE ")"
                                   : "vec3(" RAND_NOISE ", " RAND_NOISE ", " RAND_NOISE ")";
+            case SHADER_LOD_FRAC:
+                return hint_single_element ? "lodFrac"
+                                           : (with_alpha ? "vec4(lodFrac, lodFrac, lodFrac, lodFrac)"
+                                                         : "vec3(lodFrac, lodFrac, lodFrac)");
         }
     } else {
         switch (item) {
@@ -170,6 +178,8 @@ static const char* shader_item_to_str(uint32_t item, bool with_alpha, bool only_
                 return "texel.a";
             case SHADER_NOISE:
                 return RAND_NOISE;
+            case SHADER_LOD_FRAC:
+                return "lodFrac";
         }
     }
     return "";
@@ -250,6 +260,7 @@ std::string GfxRenderingAPIOGL::BuildFsShader(const CCFeatures& cc_features) {
         { "o_invisible", cc_features.opt_invisible },
         { "o_grayscale", cc_features.opt_grayscale },
         { "o_prim_depth", cc_features.opt_prim_depth },
+        { "o_mip_lod", cc_features.opt_mip_lod },
         { "o_textures", M_ARRAY(cc_features.usedTextures, bool, 2) },
         { "o_masks", M_ARRAY(cc_features.used_masks, bool, 2) },
         { "o_blend", M_ARRAY(cc_features.used_blend, bool, 2) },
@@ -278,6 +289,7 @@ std::string GfxRenderingAPIOGL::BuildFsShader(const CCFeatures& cc_features) {
         { "SHADER_1", SHADER_1 },
         { "SHADER_COMBINED", SHADER_COMBINED },
         { "SHADER_NOISE", SHADER_NOISE },
+        { "SHADER_LOD_FRAC", SHADER_LOD_FRAC },
         { "o_three_point_filtering", mCurrentFilterMode == FILTER_THREE_POINT },
         { "append_formula", (InvokeFunc)append_formula },
 #ifdef __APPLE__
@@ -509,6 +521,8 @@ ShaderProgram* GfxRenderingAPIOGL::CreateAndLoadNewShader(uint64_t shader_id0, u
     prg->frameCountLocation = glGetUniformLocation(shader_program, "frame_count");
     prg->noiseScaleLocation = glGetUniformLocation(shader_program, "noise_scale");
     prg->prim_depth_location = glGetUniformLocation(shader_program, "prim_depth");
+    prg->lod_params_location = glGetUniformLocation(shader_program, "uLodParams");
+    prg->lod_max_location = glGetUniformLocation(shader_program, "lod_max");
     prg->texture_width_location = glGetUniformLocation(shader_program, "texture_width");
     prg->texture_height_location = glGetUniformLocation(shader_program, "texture_height");
     prg->texture_filtering_location = glGetUniformLocation(shader_program, "texture_filtering");
@@ -583,8 +597,31 @@ void GfxRenderingAPIOGL::UploadTexture(const uint8_t* rgba32_buf, uint32_t width
         return;
     }
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba32_buf);
-    textures[mCurrentTextureIds[mCurrentTile]].width = width;
-    textures[mCurrentTextureIds[mCurrentTile]].height = height;
+    TextureInfo& info = textures[mCurrentTextureIds[mCurrentTile]];
+    info.width = width;
+    info.height = height;
+    if (info.mip_levels > 1) {
+        // A recycled id that held a chain: sample only the base so the texture stays complete
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+    }
+    info.mip_levels = 1;
+}
+
+void GfxRenderingAPIOGL::UploadTextureMip(const uint8_t* rgba32_buf, uint32_t width, uint32_t height, uint32_t level,
+                                          uint32_t totalLevels) {
+    if (width == 0 || height == 0) {
+        return;
+    }
+    glTexImage2D(GL_TEXTURE_2D, level, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba32_buf);
+    if (level == 0) {
+        TextureInfo& info = textures[mCurrentTextureIds[mCurrentTile]];
+        info.width = width;
+        info.height = height;
+        info.mip_levels = totalLevels;
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, (GLint)totalLevels - 1);
+        // SetSamplerParameters may not run again when the wrap and filter match its defaults
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_NEAREST);
+    }
 }
 
 #ifdef USE_OPENGLES
@@ -611,7 +648,12 @@ void GfxRenderingAPIOGL::SetSamplerParameters(int tile, bool linear_filter, uint
         glActiveTexture(GL_TEXTURE0 + tile);
     }
     const GLint filter = linear_filter && mCurrentFilterMode == FILTER_LINEAR ? GL_LINEAR : GL_NEAREST;
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
+    const TextureInfo& info = textures[mCurrentTextureIds[tile]];
+    GLint minFilter = filter;
+    if (info.mip_levels > 1) {
+        minFilter = filter == GL_LINEAR ? GL_LINEAR_MIPMAP_NEAREST : GL_NEAREST_MIPMAP_NEAREST;
+    }
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, minFilter);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
     textures[mCurrentTextureIds[tile]].filtering = !linear_filter ? FILTER_LINEAR : FILTER_THREE_POINT;
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, gfx_cm_to_opengl(cms));
