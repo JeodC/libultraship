@@ -52,6 +52,7 @@ Fast3dWindow::Fast3dWindow() : Fast3dWindow(std::vector<std::shared_ptr<Ship::Gu
 
 Fast3dWindow::~Fast3dWindow() {
     SPDLOG_DEBUG("destruct fast3dwindow");
+    GetGui()->ShutDownImGui(this);
     mInterpreter->Destroy();
     delete mRenderingApi;
     delete mWindowManagerApi;
