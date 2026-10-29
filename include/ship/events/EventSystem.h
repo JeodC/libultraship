@@ -3,6 +3,9 @@
 #include <vector>
 #include <cstdint>
 #include <cstddef>
+#include <memory>
+#include <optional>
+#include <shared_mutex>
 #include <unordered_map>
 
 #include "ship/events/EventTypes.h"
@@ -12,7 +15,7 @@ namespace Ship {
 /**
  * @brief Tracks listener registration metadata for a single event.
  *
- * EventRegistration is the internal bookkeeping record stored for each registered
+ * EventRegistration is a copy of the bookkeeping record stored for each registered
  * event ID. It holds the event's debug name, all active listeners sorted by priority,
  * and a map of callers that have invoked the event (used for diagnostics/profiling).
  */
@@ -38,6 +41,10 @@ struct EventRegistration {
  * Any listener may set IEvent::Cancelled to true; CallEvent() does not enforce
  * cancellation itself — the caller is responsible for checking it via the
  * CALL_CANCELLABLE_EVENT macro.
+ *
+ * Every method is safe to call from any thread, including from inside a listener.
+ * A dispatch runs the listeners registered when it started: one added meanwhile
+ * runs from the next dispatch, and one removed meanwhile may still run once.
  *
  * Typical usage (C++ side):
  * @code
@@ -103,27 +110,32 @@ class EventSystem {
     void CallEvent(EventID id, IEvent* event, const char* file = nullptr, int line = 0, const char* key = nullptr);
 
     /**
-     * @brief Returns the EventRegistration for the given ID, or nullptr if not found.
+     * @brief Returns a copy of the EventRegistration for the given ID, or std::nullopt if not found.
      * @param id EventID to look up.
      */
-    EventRegistration* GetEventRegistration(EventID id) {
-        if (mEventRegistry.contains(id)) {
-            return &mEventRegistry.at(id);
-        }
-        return nullptr;
-    }
+    std::optional<EventRegistration> GetEventRegistration(EventID id);
 
     /**
-     * @brief Returns a reference to the complete event registry map (EventID → EventRegistration).
+     * @brief Returns a copy of the complete event registry map (EventID → EventRegistration).
      *
      * Intended for inspection/tooling; prefer the typed accessors for normal use.
      */
-    std::unordered_map<EventID, EventRegistration>& GetEventRegistrations() {
-        return this->mEventRegistry;
-    }
+    std::unordered_map<EventID, EventRegistration> GetEventRegistrations();
 
   private:
-    std::unordered_map<EventID, EventRegistration> mEventRegistry;
+    // Listeners is replaced whole on every change, never edited in place, so a dispatch can run the list it took
+    // without holding the lock.
+    struct Entry {
+        const char* Name;
+        ListenerID NextListenerID = 0;
+        std::unordered_map<const char*, EventMetadata> Callers;
+        std::shared_ptr<const std::vector<EventListener>> Listeners = std::make_shared<std::vector<EventListener>>();
+    };
+
+    static EventRegistration Copy(const Entry& entry);
+
+    std::shared_mutex mMutex;
+    std::unordered_map<EventID, Entry> mEventRegistry;
     EventID mInternalEventID = 0;
 };
 

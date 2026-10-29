@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
+#include <atomic>
 #include <stdexcept>
 #include <functional>
+#include <thread>
 #include <vector>
 #include "ship/events/EventSystem.h"
 
@@ -55,14 +57,14 @@ TEST(EventSystem, RegisterMultipleEventsReturnDistinctIds) {
 TEST(EventSystem, RegisterEventNullNameUsesDefault) {
     Ship::EventSystem sys;
     EventID id = sys.RegisterEvent(nullptr);
-    auto* reg = sys.GetEventRegistration(id);
-    ASSERT_NE(reg, nullptr);
+    auto reg = sys.GetEventRegistration(id);
+    ASSERT_TRUE(reg.has_value());
     EXPECT_STREQ(reg->Name, "Unknown");
 }
 
 TEST(EventSystem, GetEventRegistrationReturnsNullForUnknownId) {
     Ship::EventSystem sys;
-    EXPECT_EQ(sys.GetEventRegistration(999), nullptr);
+    EXPECT_FALSE(sys.GetEventRegistration(999).has_value());
 }
 
 // ============================================================
@@ -185,8 +187,8 @@ TEST(EventSystem, CallEventUpdatesCallerMetadata) {
     IEvent ev{ false };
     sys.CallEvent(evId, &ev, "file.cpp", 42, key);
 
-    auto* reg = sys.GetEventRegistration(evId);
-    ASSERT_NE(reg, nullptr);
+    auto reg = sys.GetEventRegistration(evId);
+    ASSERT_TRUE(reg.has_value());
     auto it = reg->Callers.find(key);
     ASSERT_NE(it, reg->Callers.end());
     EXPECT_EQ(it->second.Count, 1u);
@@ -203,8 +205,8 @@ TEST(EventSystem, CallEventIncrementsCaller) {
     sys.CallEvent(evId, &ev, "f.cpp", 1, key);
     sys.CallEvent(evId, &ev, "f.cpp", 1, key);
 
-    auto* reg = sys.GetEventRegistration(evId);
-    ASSERT_NE(reg, nullptr);
+    auto reg = sys.GetEventRegistration(evId);
+    ASSERT_TRUE(reg.has_value());
     EXPECT_EQ(reg->Callers.at(key).Count, 3u);
 }
 
@@ -249,4 +251,96 @@ TEST(EventSystem, GetEventRegistrationsReflectsAllRegistered) {
     sys.RegisterEvent("B");
     sys.RegisterEvent("C");
     EXPECT_EQ(sys.GetEventRegistrations().size(), 3u);
+}
+
+TEST(EventSystem, GetEventRegistrationsIsACopy) {
+    Ship::EventSystem sys;
+    EventID evId = sys.RegisterEvent("Ev");
+    auto before = sys.GetEventRegistrations();
+    sys.RegisterListener(evId, Noop);
+    EXPECT_EQ(before.at(evId).Listeners.size(), 0u);
+    EXPECT_EQ(sys.GetEventRegistrations().at(evId).Listeners.size(), 1u);
+}
+
+// ============================================================
+// Changes during a dispatch
+// ============================================================
+
+TEST(EventSystem, ListenerAddedDuringDispatchRunsFromTheNextOne) {
+    Ship::EventSystem sys;
+    EventID evId = sys.RegisterEvent("Ev");
+
+    int added = 0;
+    gSlot[1] = [&](IEvent*) { added++; };
+    gSlot[0] = [&](IEvent*) {
+        if (added == 0) {
+            sys.RegisterListener(evId, Slot1);
+        }
+    };
+    sys.RegisterListener(evId, Slot0);
+
+    IEvent ev{ false };
+    sys.CallEvent(evId, &ev);
+    EXPECT_EQ(added, 0);
+    sys.CallEvent(evId, &ev);
+    EXPECT_EQ(added, 1);
+    gSlot[0] = gSlot[1] = nullptr;
+}
+
+TEST(EventSystem, ListenerRemovedDuringDispatchIsGoneFromTheNextOne) {
+    Ship::EventSystem sys;
+    EventID evId = sys.RegisterEvent("Ev");
+
+    int removedCalls = 0;
+    ListenerID removed = -1;
+    gSlot[0] = [&](IEvent*) { sys.UnregisterListener(evId, removed); };
+    gSlot[1] = [&](IEvent*) { removedCalls++; };
+    sys.RegisterListener(evId, Slot0, EVENT_PRIORITY_LOW);
+    removed = sys.RegisterListener(evId, Slot1, EVENT_PRIORITY_HIGH);
+
+    IEvent ev{ false };
+    sys.CallEvent(evId, &ev);
+    const int afterFirst = removedCalls;
+    sys.CallEvent(evId, &ev);
+    EXPECT_LE(afterFirst, 1);
+    EXPECT_EQ(removedCalls, afterFirst);
+    gSlot[0] = gSlot[1] = nullptr;
+}
+
+// ============================================================
+// Threads
+// ============================================================
+
+namespace {
+static std::atomic<int> gStableCalls{ 0 };
+static void Stable(IEvent*) {
+    gStableCalls++;
+}
+} // namespace
+
+TEST(EventSystem, DispatchWhileAnotherThreadRegisters) {
+    Ship::EventSystem sys;
+    EventID evId = sys.RegisterEvent("Ev");
+    gStableCalls = 0;
+    sys.RegisterListener(evId, Stable);
+
+    constexpr int kDispatches = 20000;
+    std::thread game([&] {
+        IEvent ev{ false };
+        for (int i = 0; i < kDispatches; i++) {
+            sys.CallEvent(evId, &ev);
+            if (i % 100 == 0) {
+                sys.RegisterEvent("PerActor");
+            }
+        }
+    });
+    for (int i = 0; i < kDispatches; i++) {
+        ListenerID id = sys.RegisterListener(evId, Noop, EVENT_PRIORITY_HIGH);
+        sys.UnregisterListener(evId, id);
+        if (i % 1000 == 0) {
+            sys.GetEventRegistrations();
+        }
+    }
+    game.join();
+    EXPECT_EQ(gStableCalls.load(), kDispatches);
 }
