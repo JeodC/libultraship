@@ -2414,17 +2414,8 @@ void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx
         mRenderingState.alpha_blend = use_alpha;
     }
     if (mipExtraLevels > 0) {
-        // UV derivatives are per framebuffer pixel, and the RDP measures LOD per N64 pixel
-        float resScale = 1.0f;
-        if (mFbActive && mActiveFrameBuffer != mFrameBuffers.end()) {
-            const FBInfo& fb = mActiveFrameBuffer->second;
-            if (fb.resize && fb.orig_height != 0) {
-                resScale = (float)fb.applied_height / (float)fb.orig_height;
-            }
-        } else if (mNativeDimensions.height != 0) {
-            resScale = (float)mCurDimensions.height / (float)mNativeDimensions.height;
-        }
-        const float lodParams[4] = { tex_width[0] * resScale, tex_height[0] * resScale, mRdp->prim_lod_min / 256.0f,
+        // LOD per framebuffer pixel
+        const float lodParams[4] = { (float)tex_width[0], (float)tex_height[0], mRdp->prim_lod_min / 256.0f,
                                      (float)((mRdp->other_mode_h >> G_MDSFT_TEXTDETAIL) & 3) };
         if (memcmp(lodParams, mLodParams, sizeof(lodParams)) != 0 || mipExtraLevels != mLodMax) {
             Flush();
